@@ -15,7 +15,7 @@ r.Mount("/api/v1/dws", service.Routes())
 err = service.Run(ctx)
 ```
 
-`Config` 可选 WorkspaceRoot（默认 `/dev/shm`，必须已存在且为 tmpfs）、PollInterval（1分钟）、CommandTimeout（30秒，最多1分钟）、Overlap（5分钟）、InitialLookback（24小时，最多30天）。Linux 专用。二进制必须绝对路径、常规可执行文件且摘要匹配；不运行时安装或升级。运维应令二进制及其父目录对服务账号只读。研究固定二进制 v1.0.65、commit `92c4f8c355c749ec470c68f998d862a00d7d1709`。版本切换必须重新验证 legacy JSON 契约。
+`Config` 可选 WorkspaceRoot（默认 `/dev/shm`，必须已存在且为 tmpfs）、PollInterval（默认10分钟；应用现由共享信息刷新时钟调度，REFRESH_INTERVAL 优先于兼容变量 DWS_POLL_INTERVAL）、CommandTimeout（30秒，最多1分钟）、Overlap（5分钟）、InitialLookback（24小时，最多30天）。Linux 专用。二进制必须绝对路径、常规可执行文件且摘要匹配；不运行时安装或升级。运维应令二进制及其父目录对服务账号只读。研究固定二进制 v1.0.65、commit `92c4f8c355c749ec470c68f998d862a00d7d1709`。版本切换必须重新验证 legacy JSON 契约。
 
 Run 通过显式 worker-only ListPollTargets 分页读取 enabled/active 连接，先恢复 ListPendingJobs，再按 allowlist 创建轮询任务。POST sync 创建持久化 queued job，返回202；内存队列用于立即唤醒，进程重启后持久 pending 由下一轮扫描恢复。任务执行前获得连接独占 fencing lease 并 StartJob；成功事务 CommitSync，失败记录安全错误码。连接删除/禁用由 Repository fencing 拒绝旧执行者提交。Service.Disconnect 先数据库禁用，再按精确 owner+connection 取消本进程在途执行，最多等待12秒完成进程终止、工作区清理和lease释放；登记在取得独占lease后，登记后重读连接以拒绝与断开竞争的disabled连接。多进程部署中其他进程依靠DB fencing拒写，取消映射仅覆盖当前进程。单轮顺序执行，慢连接影响其他连接延迟；首版没有并发调度和退避策略。
 
@@ -43,6 +43,7 @@ err = service.ImportWorkspace(ctx, ownerID, existingPendingConnectionID, root)
 |---|---|---|
 | GET/POST | `/connections` | 当前用户连接列表 / 创建 pending |
 | GET/DELETE | `/connections/{id}/` | 详情 / 断开并保留历史 |
+| GET | `/connections/{id}/available-groups?cursor=...` | 官方已加入群单页列表 `{items:[{id,name}],has_more,next_cursor?}`，每页100，需 active |
 | GET/PUT | `/connections/{id}/groups` | allowlist / `{groups:[{id,name}]}`，最多100 |
 | POST | `/link` | 无请求体（非空 body 返回400）→ 202 LinkChallenge，创建/复用服务器 pending 连接并启动官方登录 |
 | POST | `/connections/{id}/link` | 无请求体 → 202 LinkChallenge，已有连接重新授权 |
@@ -73,3 +74,23 @@ CLI 精确入口 `chat +chat-messages --group CID --start RFC3339 --end RFC3339 
 `gofmt -w internal/dws`、`go test ./internal/dws`、`go vet ./internal/dws`。授权测试使用可注入 fake auth executor，不启动真实登录；官方中文呈现fixture覆盖分块stderr、完整/手动URL、重试换码、fragment及恶意域拒绝；服务测试覆盖Run前拒绝、请求结束不中止授权、跨owner状态/取消拒绝、每用户并发拒绝、短有效期、取消、断开、父context取消、错误身份与lease拒写、成功加密保存。`go test -count=5 -race ./internal/dws` 通过。脱敏 fake executor 覆盖两页固定窗口、重复观察、解密失败、分页循环、取消、fencing拒绝、跨scope和群allowlist、分类；runner测试覆盖隔离环境、进程组取消、输出上限、附件大小和tmpfs约束。测试不访问真实账号、真实网络或私有群。
 
 已读取官方源码和三份研究 Markdown，并以固定官方二进制的 help 核对命令。真实账号未授权：尚未验证双账号同时登录、刷新、重启恢复、群上游权限、真实附件或服务端实际分页完整性。官方 followups 已记录群消息读取可能因服务端字段映射失败，本模块会如实失败，不能承诺真实平台可读。
+
+应用中的定时扫描已与学习平台合并为一个 `information-refresh` 任务，管理入口 `/admin/tasks`；DWS `Run` 保留手动队列和设备授权生命周期，`Poll` 由 app 统一调度。
+
+## 后台采集群配置
+
+入口 `/admin#dwsGroupsPanel`，也可在 DWS 连接行点击“配置采集群”。选择自己的已授权连接，点击“读取我的群”，勾选所需群后保存；名称和 CID 自动读取，无需手动填写。保存整体替换白名单，最多100群；空列表停止后续定时采集，保留归档消息。统一计划任务默认十分钟刷新，可在 `/admin/tasks` 调整或暂停。读取群列表和勾选不会立即修改已保存范围；本次未列出的已保存群保留，可在“已选择的采集群”中移除。
+
+群发现通过连接级租约及独立 tmpfs 加密工作区运行固定官方 CLI `chat +my-groups --limit 100 --profile PROFILE -f json [--cursor CURSOR]`，与消息轮询互斥使用凭据。复用凭据刷新回存和断开 fencing；不返回上游原始内容或凭据。读取每页验证 groups/count/hasMore/complete，部分失败、重复群 ID、无效或重复游标拒绝。单页 CLI 不提供 paginationKnown 时由 hasMore/complete 判定；显式 false 仍拒绝。前端支持加载更多，检测跨页游标循环，并保留现有选择和未保存修改。读取失败可重试，不清空既有范围。
+
+手动试采仅在连接 active、修改已保存后开放。面板显示 queued/running/succeeded/failed/cancelled 并轮询结果；提交返回202不等于成功。读取失败可手动刷新结果，保存失败保留编辑内容；切换账号或连接隔离旧响应。群列表替换会使旧租约失效，授权或试采执行期间应等待结束再保存修改。
+
+批量浏览器验证脚本 `scripts/dws_groups_ui.cjs` 依赖外部 Playwright（`PLAYWRIGHT_MODULE`），使用 `DEMO_ORIGIN`、`BOOTSTRAP_ADMIN_USERNAME/PASSWORD`；可用 `CHROMIUM_PATH` 和 `DWS_SCREENSHOT_DIR` 配置浏览器与截图路径。`DWS_LIVE_DISCOVERY=1` 显式验证当前账号真实群读取，仅报告条数和分页状态；默认使用浏览器路由 fixture。保存测试使用临时普通用户及无凭据 pending 连接（仅浏览器模拟 active 和发现响应），PUT/GET 走真实数据库，最后删除测试用户。试采状态使用浏览器 fixture，不请求真实群消息。既有连接身份/启用状态与白名单前后比对保持一致；读取凭据回存可更新连接 updated_at。
+
+本地已验证：真实 DWS 账号读取7群、无后续页；批量浏览器覆盖勾选保存/重载、分页、未列出群保留、失败保留修改、清空、试采成功和失败状态，无页面 JS 错误。单元测试覆盖完整性校验、游标、跨 owner 拒绝、固定参数及租约释放。真实群消息采集、附件能力仍未由本次群发现验证证明。
+
+## 首次历史范围与空采集
+
+首次无 checkpoint 时默认读取最近30天，之后从已提交水位减 overlap 增量刷新。旧默认曾为24小时，因此较早建立的 checkpoint 不会自动回溯更早消息；空窗口提交也会显示成功且记录数为0。运维修复可调用 `Service.SyncHistory(ctx, scope, group, days)`（1–30天），在原白名单、连接租约、分页校验及内容去重保护下补采，原子提交消息与当前水位，不清空历史或重置 checkpoint。
+
+显式在线诊断：仅设置 `DWS_DIAGNOSE_LIVE=1` 后运行 `go test ./internal/dws -run '^TestDiagnoseLiveWindow$' -v -count=1`，使用服务环境中的数据库、固定 CLI、密钥和 Bootstrap 用户，对该用户已启用连接的白名单群比较1天与30天窗口，只输出条数/完整性。额外设置 `DWS_REPAIR_HISTORY=1` 才会调用上述30天补采并提交真实消息。默认测试跳过此在线诊断。此次真实账号核对：1天0条、30天27条，均完整成功，已通过补采提交。

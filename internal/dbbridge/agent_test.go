@@ -30,6 +30,15 @@ func TestAgentRepositoryCRUDIsolationAndVersions(t *testing.T) {
 	registry := f.Registry{Repository: repo}
 	a, err := registry.Create(ctx, u.ID, definition("a", "mock", nil, nil))
 	must(t, err)
+	// Inherited models intentionally persist an empty name; resolve it at run time.
+	a.Model = f.ModelConfig{Provider: "mock", Mode: "default"}
+	a, err = registry.Save(ctx, u.ID, a)
+	must(t, err)
+	loaded, err := repo.GetAgent(ctx, f.Scope{OwnerID: u.ID, AgentID: a.ID})
+	must(t, err)
+	if loaded.Model.Mode != "default" || loaded.Model.Model != "" {
+		t.Fatal("inherited model configuration was not persisted")
+	}
 	b, err := registry.Create(ctx, u.ID, definition("b", "mock", nil, nil))
 	must(t, err)
 	other, err := registry.Create(ctx, v.ID, definition("other", "mock", nil, nil))
@@ -120,7 +129,7 @@ func TestAgentRepositoryCRUDIsolationAndVersions(t *testing.T) {
 	must(t, db.Migrate(ctx))
 	var version int
 	must(t, db.pool.QueryRow(ctx, `SELECT max(version) FROM dbbridge_migrations`).Scan(&version))
-	if version != 5 {
+	if version != 15 {
 		t.Fatal("migration version", version)
 	}
 }
@@ -253,7 +262,7 @@ func TestFrameworkAcceptancePersistedBridgeDispatch(t *testing.T) {
 	if search.calls != 2 || notifications.calls != 2 || notifications.owner != u.ID {
 		t.Fatal("bridge service calls missing")
 	}
-	for table, want := range map[string]int{"agent_memories": 2, "agent_workflows": 2, "agent_workflow_versions": 2, "agent_runs": 4} {
+	for table, want := range map[string]int{"memories": 2, "agent_workflows": 2, "agent_workflow_versions": 2, "agent_runs": 4} {
 		var count int
 		must(t, db.pool.QueryRow(ctx, `SELECT count(*) FROM `+table+` WHERE owner_user_id=$1`, u.ID).Scan(&count))
 		if count != want {
@@ -264,6 +273,45 @@ func TestFrameworkAcceptancePersistedBridgeDispatch(t *testing.T) {
 	code(t, err, "AGENT_NOT_FOUND")
 	t.Log("persisted acceptance: two isolated memories, A → Tool Registry → Bridge → B → mock Search; workflow and notification request; owner isolation; no agent HTTP")
 }
+func TestAgentDataExactRecordIDReturnsBodyAndRejectsOtherOwner(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	u := fixtureUser(t, db, "evidence-owner", model.RoleUser)
+	v := fixtureUser(t, db, "evidence-other", model.RoleUser)
+	for _, owner := range []string{u.ID, v.ID} {
+		_, err := db.pool.Exec(ctx, `INSERT INTO platform_connections(user_id,id,source,state) VALUES($1,'evidence-connection','chaoxing','active')`, owner)
+		must(t, err)
+	}
+	insert := func(owner, externalID, content string) string {
+		t.Helper()
+		var id string
+		must(t, db.pool.QueryRow(ctx, `INSERT INTO platform_records(user_id,connection_id,source,kind,external_id,parent_id,hash,content,observed_at) VALUES($1,'evidence-connection','chaoxing','material',$2,'','hash',$3,now()) RETURNING id::text`, owner, externalID, content).Scan(&id))
+		return id
+	}
+	ownedID := insert(u.ID, "native-a", `{"title":"资料标题","content":"应读取的真实正文","text":"旧字段不应优先"}`)
+	legacyID := insert(u.ID, "native-b", `{"title":"历史记录","text":"兼容旧正文字段"}`)
+	otherID := insert(v.ID, "native-a", `{"title":"其他用户同名资料","content":"私人正文"}`)
+	data := db.AgentData()
+	query := func(owner, id string) f.QueryResult {
+		t.Helper()
+		result, err := data.Query(ctx, f.Scope{OwnerID: owner}, f.Query{Dataset: "platform_records", Fields: []string{"id", "external_id", "title", "text"}, Filters: []f.Filter{{Field: "id", Operator: "eq", Value: id}}, Limit: 1})
+		must(t, err)
+		return result
+	}
+	for _, tc := range []struct{ id, external, body string }{{ownedID, "native-a", "应读取的真实正文"}, {legacyID, "native-b", "兼容旧正文字段"}} {
+		result := query(u.ID, tc.id)
+		if len(result.Rows) != 1 || result.Rows[0]["id"] != tc.id || result.Rows[0]["external_id"] != tc.external || result.Rows[0]["text"] != tc.body {
+			t.Fatalf("exact center-record lookup did not return expected source body: %+v", result.Rows)
+		}
+	}
+	if result := query(u.ID, otherID); len(result.Rows) != 0 {
+		t.Fatal("exact record ID bypassed owner isolation")
+	}
+	if result := query(v.ID, ownedID); len(result.Rows) != 0 {
+		t.Fatal("other owner could read evidence by guessed record ID")
+	}
+}
+
 func TestAgentDataReadonlyWhitelistAndOwnerScope(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
@@ -278,7 +326,7 @@ func TestAgentDataReadonlyWhitelistAndOwnerScope(t *testing.T) {
 	data := db.AgentData()
 	catalog, err := data.Catalog(ctx, f.Scope{OwnerID: u.ID})
 	must(t, err)
-	if len(catalog) != 1 || catalog[0].Name != "platform_records" {
+	if len(catalog) != 6 || catalog[0].Name != "platform_records" || catalog[1].Name != "academic_offerings" || catalog[2].Name != "academic_items" || catalog[3].Name != "schedules" || catalog[4].Name != "dws_messages" || catalog[5].Name != "dws_attachments" {
 		t.Fatal("catalog")
 	}
 	q := f.Query{Dataset: "platform_records", Fields: []string{"title", "text"}, Limit: 1}
@@ -301,7 +349,7 @@ func TestAgentDataReadonlyWhitelistAndOwnerScope(t *testing.T) {
 	code(t, err, "PERMISSION_DENIED")
 	q = f.Query{Dataset: "platform_records", Fields: []string{"title"}, Limit: 101}
 	_, err = data.Query(ctx, f.Scope{OwnerID: u.ID}, q)
-	code(t, err, "PERMISSION_DENIED")
+	code(t, err, "INVALID_ARGUMENT")
 	expired, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
 	defer cancel()
 	q.Limit = 1

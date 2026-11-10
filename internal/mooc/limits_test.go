@@ -2,6 +2,7 @@ package mooc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -48,11 +49,15 @@ func TestRepeatedPageAndMissingDirectory(t *testing.T) {
 		return response(`{"code":0,"result":{"result":[{"id":10,"termPanel":{"id":101},"schoolPanel":{"shortName":"TEST"}}],"pagination":{"totalPageCount":3}}}`), nil
 	})
 	s := sessionFor(t, a, scope, "alpha")
-	p, e := a.Sync(context.Background(), scope, s, contract.Course, "")
+	p, e := a.Sync(context.Background(), scope, s, contract.Assignment, "")
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = a.Sync(context.Background(), scope, s, contract.Course, p.NextCursor)
+	c, _ := newCursor(scope, contract.Assignment, p.NextCursor)
+	c.Courses = nil
+	c.Index = 0
+	b, _ := json.Marshal(c)
+	_, e = a.Sync(context.Background(), scope, s, contract.Assignment, base64Cursor(b))
 	if !errors.Is(e, contract.ErrParse) {
 		t.Fatal("repeated page accepted", e)
 	}
@@ -115,5 +120,30 @@ func TestRedirectRestriction(t *testing.T) {
 	_, e := a.BeginAuth(context.Background(), scope)
 	if !errors.Is(e, contract.ErrUpstream) {
 		t.Fatal(e)
+	}
+}
+
+func TestNullableDirectoryChildren(t *testing.T) {
+	// Sanitized shape from a live DTO: lessons with units:null coexist with tasks.
+	const fixture = `{"id":101,"chapters":[{"units":null,"lessons":[{"units":null},{"units":[{"id":71,"contentId":81,"contentType":2,"name":"Fixture quiz","test":{"type":2}}]}],"exams":null}]}`
+	var dto map[string]any
+	decoder := json.NewDecoder(strings.NewReader(fixture))
+	decoder.UseNumber()
+	if e := decoder.Decode(&dto); e != nil {
+		t.Fatal(e)
+	}
+	co := course{ID: "10", Term: "101", Type: 1}
+	records, e := termRecords(dto, co, contract.Assignment)
+	if e != nil || len(records) != 1 {
+		t.Fatalf("task lost beside null collection: count=%d err=%v", len(records), e)
+	}
+	for _, invalid := range []any{nil, "unexpected", map[string]any{}} {
+		if _, e := termRecords(map[string]any{"chapters": invalid}, co, contract.Assignment); !errors.Is(e, contract.ErrParse) {
+			t.Fatal("invalid root accepted", e)
+		}
+	}
+	dto["chapters"] = []any{map[string]any{"units": "unexpected"}}
+	if _, e := termRecords(dto, co, contract.Assignment); !errors.Is(e, contract.ErrParse) {
+		t.Fatal("malformed child accepted", e)
 	}
 }

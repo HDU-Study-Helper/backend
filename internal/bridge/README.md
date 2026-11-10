@@ -9,3 +9,7 @@
 ## Agent 内部 Port 实现
 
 `internal/agent.Service` 实现本接口的 `v1/agent.run`；`DispatchBridge` 通过同进程 Port.Call 将可信 parent ExecutionContext 保留在 Go context 中，目标 Runtime 重新检查 owner、权限、循环和预算。`BackendBridge` 支持 notification.send / data.catalog / data.query，宿主通过 BackendServices 注入服务。现有 Demo 及 HTTP 路由不变；不新增本机 HTTP、RPC 或消息总线。详见 [框架说明](../../../agent/framework/README.md)。
+
+## 日程内部Port
+
+internal/schedule.Service复用Port提供schedule.create/query/get/update/delete；app装配后为非日程操作保留Demo回退。OwnerID由可信后端调用者绑定，创建来源固定AGENT；HTTP手动创建固定USER，不允许payload伪造用户/来源/mod。没有新增任意HTTP Bridge网关或Agent Runtime。见../schedule/README.md。

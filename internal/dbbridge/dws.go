@@ -90,7 +90,7 @@ func (r *dws) GetConnection(ctx context.Context, s model.DWSScope) (model.DWSCon
 }
 func (r *dws) ListConnections(ctx context.Context, u string) ([]model.DWSConnection, error) {
 	out := []model.DWSConnection{}
-	rows, e := r.db.pool.Query(ctx, `SELECT `+connCols+` FROM dws_connections WHERE user_id=$1 ORDER BY created_at,id LIMIT 100`, u)
+	rows, e := r.db.pool.Query(ctx, `SELECT `+connCols+` FROM dws_connections WHERE user_id=$1 AND enabled ORDER BY created_at,id LIMIT 100`, u)
 	if e != nil {
 		return nil, storageError(e)
 	}
@@ -324,7 +324,9 @@ func (r *dws) CommitSync(ctx context.Context, l model.Lease, c model.SyncCommit)
 	if len(c.Messages) > 10000 || c.Checkpoint.GroupID == "" || (l.GroupID != "" && c.Checkpoint.GroupID != l.GroupID) || c.Checkpoint.PollWatermark.IsZero() || len(c.Checkpoint.CursorCiphertext) > model.MaxWorkspaceBytes || len(c.Checkpoint.CLITokenCiphertext) > model.MaxWorkspaceBytes || len(c.WorkspaceCiphertext) > model.MaxWorkspaceBytes {
 		return model.ErrInvalidArgument
 	}
-	return r.db.transaction(ctx, func(tx pgx.Tx) error {
+	created, updated, unchanged := 0, 0, 0
+	var snapshots []model.ControlChange
+	err := r.db.transaction(ctx, func(tx pgx.Tx) error {
 		if e := checkLease(ctx, tx, l); e != nil {
 			return e
 		}
@@ -340,9 +342,30 @@ func (r *dws) CommitSync(ctx context.Context, l model.Lease, c model.SyncCommit)
 			if m.GroupID != groupID || m.ExternalID == "" || len(m.ExternalID) > 512 || len(m.SourceVersion) > 512 || !validHash(m.ContentHash) || len(m.Content) > model.MaxMessageBytes || m.ObservedAt.IsZero() {
 				return model.ErrInvalidArgument
 			}
+			var version, hash string
+			var before []byte
+			lookupErr := tx.QueryRow(ctx, `SELECT source_version,content_hash,content FROM dws_messages WHERE user_id=$1 AND connection_id=$2 AND group_id=$3 AND external_id=$4`, l.Scope.UserID, l.Scope.ConnectionID, groupID, m.ExternalID).Scan(&version, &hash, &before)
+			if lookupErr != nil && lookupErr != pgx.ErrNoRows {
+				return storageError(lookupErr)
+			}
+			operation := "updated"
+			if lookupErr == pgx.ErrNoRows {
+				created++
+				operation = "created"
+			} else if version != m.SourceVersion || hash != m.ContentHash {
+				updated++
+			} else {
+				unchanged++
+				continue
+			}
+			snapshots = append(snapshots, model.ControlChange{Operation: operation, Resource: "message", ConnectionID: l.Scope.ConnectionID, RecordID: m.ExternalID, Before: before, After: m.Content, OccurredAt: m.ObservedAt})
+
 			if _, e := tx.Exec(ctx, `INSERT INTO dws_messages(user_id,connection_id,group_id,external_id,source_version,content_hash,content,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(user_id,connection_id,group_id,external_id) DO UPDATE SET source_version=EXCLUDED.source_version,content_hash=EXCLUDED.content_hash,content=EXCLUDED.content,observed_at=EXCLUDED.observed_at WHERE dws_messages.source_version<>EXCLUDED.source_version OR dws_messages.content_hash<>EXCLUDED.content_hash`, l.Scope.UserID, l.Scope.ConnectionID, groupID, m.ExternalID, m.SourceVersion, m.ContentHash, nonNil(m.Content), m.ObservedAt); e != nil {
 				return storageError(e)
 			}
+		}
+		if e := captureControl(ctx, tx, l.Scope.UserID, "dws", snapshots); e != nil {
+			return e
 		}
 		tag, e := tx.Exec(ctx, `INSERT INTO dws_checkpoints(user_id,connection_id,group_id,cursor,cli_token,poll_watermark) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(user_id,connection_id,group_id) DO UPDATE SET cursor=excluded.cursor,cli_token=excluded.cli_token,poll_watermark=excluded.poll_watermark,updated_at=now() WHERE dws_checkpoints.poll_watermark<=excluded.poll_watermark`, l.Scope.UserID, l.Scope.ConnectionID, groupID, nonNil(c.Checkpoint.CursorCiphertext), nonNil(c.Checkpoint.CLITokenCiphertext), c.Checkpoint.PollWatermark)
 		if e != nil {
@@ -368,7 +391,12 @@ func (r *dws) CommitSync(ctx context.Context, l model.Lease, c model.SyncCommit)
 		// A lease may expire during a large transaction; check again before commit.
 		return checkLease(ctx, tx, l)
 	})
+	if err == nil {
+		model.RefreshCommitted(ctx, "dws", created, updated, unchanged)
+	}
+	return err
 }
+
 func (r *dws) ListMessages(ctx context.Context, s model.DWSScope, g string, after int64, limit int) ([]model.Message, error) {
 	if limit < 1 || limit > 100 || after < 0 {
 		return nil, model.ErrInvalidArgument
@@ -427,6 +455,10 @@ func (r *dws) PutAttachment(ctx context.Context, l model.Lease, a model.Attachme
 		if tag.RowsAffected() > 0 {
 			after, _ := json.Marshal(map[string]string{"name": a.Name, "media_type": a.MediaType, "sha256": a.SHA256})
 			changes = append(changes, trigger.Change{UserID: l.Scope.UserID, ConnectionID: l.Scope.ConnectionID, Source: "dws", Resource: "attachment", RecordID: strconv.FormatInt(a.MessageID, 10) + ":" + a.ID, ExternalID: a.ID, ParentID: strconv.FormatInt(a.MessageID, 10), Operation: operation, ChangedFields: trigger.FieldChanges(before, after), OccurredAt: time.Now().UTC()})
+			if e := captureControl(ctx, tx, l.Scope.UserID, "dws", []model.ControlChange{{Operation: string(operation), Resource: "attachment", ConnectionID: l.Scope.ConnectionID, RecordID: strconv.FormatInt(a.MessageID, 10) + ":" + a.ID, Before: before, After: after, ChangedFields: trigger.FieldChanges(before, after), OccurredAt: time.Now().UTC()}}); e != nil {
+				return e
+			}
+
 		}
 		return checkLease(ctx, tx, l)
 	})

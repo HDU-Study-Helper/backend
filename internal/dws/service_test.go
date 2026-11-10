@@ -183,3 +183,37 @@ func TestScopeAndAllowlist(t *testing.T) {
 		t.Fatal("CLI called without authorization")
 	}
 }
+
+type historyCheckpointRepo struct{ *fakeRepo }
+
+func (f *historyCheckpointRepo) GetCheckpoint(context.Context, model.DWSScope, string) (model.Checkpoint, error) {
+	return model.Checkpoint{GroupID: "g", PollWatermark: time.Now().Add(-time.Minute)}, nil
+}
+
+// A successful empty incremental scan must not prevent explicitly backfilling
+// older messages. The repair uses a bounded window and the normal atomic commit.
+func TestSyncHistoryUsesBoundedWindow(t *testing.T) {
+	s, repo, exec := testService(t)
+	s.repo = &historyCheckpointRepo{repo}
+	exec.pages = [][]byte{fixturePage(false, "")}
+	if err := s.SyncHistory(context.Background(), repo.scope, "g", 30); err != nil {
+		t.Fatal(err)
+	}
+	args := exec.calls[0]
+	start, err := time.Parse(time.RFC3339Nano, args[5])
+	if err != nil {
+		t.Fatal(err)
+	}
+	end, err := time.Parse(time.RFC3339Nano, args[7])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if end.Sub(start) != 30*24*time.Hour || len(repo.commits) != 1 || len(repo.commits[0].Messages) != 1 {
+		t.Fatal("history window or commit incorrect")
+	}
+	for _, days := range []int{0, 31} {
+		if !errors.Is(s.SyncHistory(context.Background(), repo.scope, "g", days), model.ErrInvalidArgument) {
+			t.Fatal("unbounded history accepted")
+		}
+	}
+}

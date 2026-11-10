@@ -177,11 +177,17 @@ func parseTopics(b []byte) ([]DiscussionTopic, string, string, bool, error) {
 		return nil, "", "", false, contract.ErrParse
 	}
 	var rows []map[string]json.RawMessage
-	if len(payload.Datas) == 0 || string(payload.Datas) == "null" || json.Unmarshal(payload.Datas, &rows) != nil || len(rows) > 500 {
+	// Empty terminal pages omit datas entirely. Missing datas on a
+	// continuing page, explicit null, and malformed collections remain errors.
+	if end && len(payload.Datas) == 0 {
+		rows = []map[string]json.RawMessage{}
+	} else if len(payload.Datas) == 0 || string(payload.Datas) == "null" || json.Unmarshal(payload.Datas, &rows) != nil || len(rows) > 500 {
 		return nil, "", "", false, contract.ErrParse
 	}
+	// lastValue is the required progress cursor. The real endpoint omits
+	// lastAuxValue for some courses; an absent auxiliary cursor stays empty.
 	last, aux := scalar(p.LastValue), scalar(p.LastAuxValue)
-	if !end && (last == "" || len(p.LastAuxValue) == 0 || string(p.LastAuxValue) == "null" || (aux == "" && string(p.LastAuxValue) != `""`)) {
+	if !end && (last == "" || (len(p.LastAuxValue) > 0 && (string(p.LastAuxValue) == "null" || (aux == "" && string(p.LastAuxValue) != `""`)))) {
 		return nil, "", "", false, contract.ErrParse
 	}
 	out := make([]DiscussionTopic, 0, len(rows))
@@ -206,7 +212,7 @@ func parseTopics(b []byte) ([]DiscussionTopic, string, string, bool, error) {
 		fields := map[string]any{}
 		// Only observed content metadata is allowed; signatures, file objects and
 		// navigation URLs cannot be copied through generic response maps.
-		for _, key := range []string{"createrName", "creatorName", "createName", "name", "createTime", "updateTime", "lastReplyTime", "reply_count", "replyCount", "praise_count", "praiseCount", "isTeacher", "topicType", "isReply"} {
+		for _, key := range []string{"createrName", "creatorName", "createName", "name", "createTime", "create_time", "createtime", "gmtCreate", "gmt_create", "updateTime", "update_time", "gmtModified", "gmt_modified", "lastReplyTime", "last_reply_time", "reply_count", "replyCount", "praise_count", "praiseCount", "isTeacher", "topicType", "isReply"} {
 			raw, exists := row[key]
 			if !exists {
 				continue
@@ -246,6 +252,9 @@ func (a *adapter) DiscussionCourses(ctx context.Context, scope contract.Scope, s
 	}
 	out := make([]contract.CoursePartition, 0, len(courses))
 	for _, co := range courses {
+		if contract.CourseExcluded(ctx, scope, co.key()) {
+			continue
+		}
 		out = append(out, contract.CoursePartition{CourseID: co.ID, ClassID: co.Class})
 	}
 	return out, nil
@@ -260,14 +269,26 @@ func (a *adapter) SyncDiscussionCourse(ctx context.Context, scope contract.Scope
 	if courseID == "" || classID == "" || len(courseID) > 512 || len(classID) > 512 {
 		return contract.Page{}, contract.ErrInvalid
 	}
-	if raw == "" {
-		s, c, j, err := a.restore(scope, session)
+	s, c, j, err := a.restore(scope, session)
+	if err != nil {
+		return contract.Page{}, err
+	}
+	if !s.Authorized {
+		return contract.Page{}, contract.ErrAuthRequired
+	}
+	if raw != "" {
+		v, err := decode(raw, scope, discussionResource)
 		if err != nil {
 			return contract.Page{}, err
 		}
-		if !s.Authorized {
-			return contract.Page{}, contract.ErrAuthRequired
+		if len(v.Courses) != 1 || v.Index != 0 || v.Courses[0].ID != courseID || v.Courses[0].Class != classID {
+			return contract.Page{}, contract.ErrInvalid
 		}
+	}
+	if contract.CourseExcluded(ctx, scope, (course{ID: courseID, Class: classID}).key()) {
+		return contract.Page{Records: []contract.Record{}, Session: save(s, j)}, nil
+	}
+	if raw == "" {
 		courses, err := fetchCourses(ctx, c)
 		if err != nil {
 			return contract.Page{}, err
@@ -284,14 +305,6 @@ func (a *adapter) SyncDiscussionCourse(ctx context.Context, scope contract.Scope
 		}
 		raw = encode(cursor{Version: 1, Scope: scope, Resource: discussionResource, Courses: []course{*target}, Page: 1})
 		session = save(s, j)
-	} else {
-		v, err := decode(raw, scope, discussionResource)
-		if err != nil {
-			return contract.Page{}, err
-		}
-		if len(v.Courses) != 1 || v.Index != 0 || v.Courses[0].ID != courseID || v.Courses[0].Class != classID {
-			return contract.Page{}, contract.ErrInvalid
-		}
 	}
 	return a.Sync(ctx, scope, session, discussionResource, raw)
 }
@@ -315,7 +328,14 @@ func syncDiscussion(ctx context.Context, c *http.Client, v *cursor) ([]contract.
 	out := make([]contract.Record, 0, len(topics))
 	for _, topic := range topics {
 		fields := topic.Fields
-		fields["course_id"], fields["class_id"] = co.ID, co.Class
+		for key, value := range courseFields(co) {
+			fields[key] = value
+		}
+		fields["coverage"], fields["body_status"] = "topic_list", "source_text"
+		aliasTime(fields, "published_at", "create_time", "createTime", "createtime", "gmtCreate", "gmt_create")
+		aliasTime(fields, "updated_at", "update_time", "updateTime", "gmtModified", "gmt_modified")
+		aliasTime(fields, "last_reply_at", "last_reply_time", "lastReplyTime")
+		aliasAuthor(fields, "createrName", "creatorName", "createName", "name")
 		for _, mapping := range [][2]string{{"createrName", "author"}, {"creatorName", "author"}, {"createName", "author"}, {"name", "author"}, {"reply_count", "reply_count"}, {"replyCount", "reply_count"}, {"praise_count", "praise_count"}, {"praiseCount", "praise_count"}, {"topicType", "topic_type"}} {
 			if value, ok := topic.Fields[mapping[0]]; ok {
 				if _, exists := fields[mapping[1]]; !exists {
@@ -329,9 +349,7 @@ func syncDiscussion(ctx context.Context, c *http.Client, v *cursor) ([]contract.
 		v.Page++
 		v.DiscussionLastValue, v.DiscussionLastAuxValue = last, aux
 	} else {
-		v.Index++
-		v.Page = 1
-		v.DiscussionLastValue, v.DiscussionLastAuxValue = "", ""
+		v.advanceCourse()
 	}
 	return out, nil
 }

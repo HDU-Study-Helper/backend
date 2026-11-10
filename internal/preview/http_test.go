@@ -45,7 +45,7 @@ func (r *fakeRepo) CourseRecords(ctx context.Context, owner, source, connection,
 }
 func TestPreviewHTTPAuthAndBoundaries(t *testing.T) {
 	repo := &fakeRepo{}
-	s := New(repo, []contract.Descriptor{{Source: "chaoxing", Resources: []contract.Resource{contract.Course, contract.Exam}}}, 60)
+	s := New(repo, []contract.Descriptor{{Source: "chaoxing", Resources: []contract.Resource{contract.Course, contract.Exam}}}, 600)
 	request := func(path string, user bool) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodGet, path, nil)
 		if user {
@@ -59,7 +59,7 @@ func TestPreviewHTTPAuthAndBoundaries(t *testing.T) {
 		t.Fatal("anonymous preview allowed")
 	}
 	w := request("/overview?user_id=attacker", true)
-	if w.Code != 200 || repo.owner != "trusted-owner" || !strings.Contains(w.Body.String(), `"kind":"exam"`) {
+	if w.Code != 200 || repo.owner != "trusted-owner" || !strings.Contains(w.Body.String(), `"kind":"exam"`) || !strings.Contains(w.Body.String(), `"poll_interval_seconds":600`) || !strings.Contains(w.Body.String(), `"dws_poll_interval_seconds":600`) {
 		t.Fatal("owner/empty resource mismatch", w.Body.String())
 	}
 	w = request("/records?source=chaoxing&connection_id=connection&resource=course&limit=1", true)

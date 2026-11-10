@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -17,6 +19,10 @@ import (
 
 const origin = "https://www.icourse163.org"
 const maxBody = 4 << 20
+
+// Only transport failures and transient gateway/service statuses are retryable.
+// Authentication, malformed content and other application errors are not.
+var errTransientRead = fmt.Errorf("%w: transient_read", contract.ErrUpstream)
 
 type adapter struct{ client http.Client }
 
@@ -42,8 +48,8 @@ func New(deps contract.Dependencies) (contract.Adapter, error) {
 func (a *adapter) Describe() contract.Descriptor {
 	return contract.Descriptor{
 		Source: "mooc", Name: "中国大学 MOOC / SPOC", QRLogin: true,
-		Resources:   []contract.Resource{contract.Course, contract.Assignment, contract.Exam, contract.Progress},
-		Limitations: []string{"全量轮询，父层按内容哈希幂等；没有删除或增量 API", "作业和考试仅目录元数据，不开卷、不取答案、不提交", "进度仅目录显式个人状态与 lastLearnUnitId，不代表完整完成率", "SPOC 空目录不保证覆盖源课程；公告尚无核实端点", "本适配器仅通过 Mock 验证，未使用真实账号验收"},
+		Resources:   []contract.Resource{contract.Course, "chapter", "lesson", "material", "discussion", contract.Assignment, contract.Exam, contract.Progress, contract.Notice},
+		Limitations: []string{"全量轮询，父层按内容哈希幂等；没有删除或增量 API", "作业和考试仅目录元数据，不开卷、不取答案、不提交", "进度保留term/章/节/单元原生字段与 lastLearnUnitId，不合成完成率；讨论每帖有界回复、嵌套评论不支持", "目录覆盖仅限可见源响应；公告和材料正文读取以各记录 coverage/body_status 为准", "真实会话已验证六课程目录形状；未公布或不可访问内容不能视为已覆盖"},
 	}
 }
 
@@ -165,7 +171,7 @@ func request(ctx context.Context, c *http.Client, method, path, referer string, 
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, contract.ErrUpstream
+		return nil, errTransientRead
 	}
 	defer res.Body.Close()
 	if res.StatusCode == 401 || res.StatusCode == 403 {
@@ -173,6 +179,9 @@ func request(ctx context.Context, c *http.Client, method, path, referer string, 
 	}
 	if res.StatusCode == 429 {
 		return nil, contract.ErrRateLimited
+	}
+	if res.StatusCode == 502 || res.StatusCode == 503 || res.StatusCode == 504 || res.StatusCode == 408 {
+		return nil, errTransientRead
 	}
 	if res.StatusCode != 200 {
 		return nil, contract.ErrUpstream
@@ -182,7 +191,7 @@ func request(ctx context.Context, c *http.Client, method, path, referer string, 
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, contract.ErrUpstream
+		return nil, errTransientRead
 	}
 	if len(b) > maxBody {
 		return nil, contract.ErrParse
@@ -227,11 +236,30 @@ func rpc(ctx context.Context, c *http.Client, method, referer string, form url.V
 	if csrf == "" {
 		return nil, contract.ErrAuthRequired
 	}
-	b, e := request(ctx, c, "POST", "/web/j/"+method+".rpc?csrfKey="+url.QueryEscape(csrf), referer, form)
-	if e != nil {
-		return nil, e
+	// The allowlist contains catalog-only reads; QR/login exchange never retries.
+	attempts := 1
+	if method == "learnerCourseRpcBean.getMyLearnedCoursePanelList" || method == "courseBean.getLastLearnedMocTermDto" {
+		attempts = 3
 	}
-	return decode(b)
+	var b []byte
+	var e error
+	for attempt := 0; attempt < attempts; attempt++ {
+		b, e = request(ctx, c, "POST", "/web/j/"+method+".rpc?csrfKey="+url.QueryEscape(csrf), referer, form)
+		if e == nil {
+			return decode(b)
+		}
+		if !errors.Is(e, errTransientRead) || attempt+1 == attempts {
+			return nil, e
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, e
 }
 func text(v any) string {
 	switch x := v.(type) {

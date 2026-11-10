@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,8 +23,6 @@ type Service struct {
 	repo     model.PlatformRepository
 	vault    *credential.Vault
 	adapters map[string]contract.Adapter
-	interval time.Duration
-	wake     chan struct{}
 	qrMu     sync.Mutex
 	qr       map[model.DWSScope]contract.AuthResult
 }
@@ -32,7 +31,7 @@ func New(repo model.PlatformRepository, vault *credential.Vault, adapters []cont
 	if repo == nil || vault == nil {
 		return nil, model.ErrInvalidArgument
 	}
-	s := &Service{repo: repo, vault: vault, adapters: map[string]contract.Adapter{}, interval: time.Minute, wake: make(chan struct{}, 1), qr: map[model.DWSScope]contract.AuthResult{}}
+	s := &Service{repo: repo, vault: vault, adapters: map[string]contract.Adapter{}, qr: map[model.DWSScope]contract.AuthResult{}}
 	for _, a := range adapters {
 		if a == nil {
 			return nil, model.ErrInvalidArgument
@@ -47,7 +46,7 @@ func New(repo model.PlatformRepository, vault *credential.Vault, adapters []cont
 }
 func (s *Service) Sources() []contract.Descriptor {
 	out := []contract.Descriptor{}
-	for _, key := range []string{"chaoxing", "mooc", "ucampus"} {
+	for _, key := range []string{"chaoxing", "mooc", "ucampus", "jwxt"} {
 		if a := s.adapters[key]; a != nil {
 			out = append(out, a.Describe())
 		}
@@ -96,6 +95,8 @@ func errorCode(e error) string {
 		return "auth_required"
 	case errors.Is(e, contract.ErrParse):
 		return "parse_failed"
+	case errors.Is(e, contract.ErrVerificationRequired):
+		return "verification_required"
 	case errors.Is(e, contract.ErrRateLimited):
 		return "rate_limited"
 	case errors.Is(e, contract.ErrInvalid):
@@ -249,16 +250,35 @@ func (s *Service) Auth(ctx context.Context, scope model.DWSScope) (contract.Auth
 }
 func (s *Service) Sync(ctx context.Context, scope model.DWSScope, resource contract.Resource) error {
 	if resource == contract.Discussion {
-		return s.syncDiscussionCourses(ctx, scope)
+		connection, err := s.repo.Get(ctx, scope)
+		if err != nil {
+			return err
+		}
+		if _, partitioned := s.adapters[connection.Source].(contract.DiscussionPartitioner); partitioned {
+			return s.syncDiscussionCourses(ctx, scope)
+		}
 	}
 	return s.syncPage(ctx, scope, resource, "", "")
 }
 func (s *Service) syncPage(ctx context.Context, scope model.DWSScope, resource contract.Resource, courseID, classID string) error {
+	return s.syncPageTerm(ctx, scope, resource, courseID, classID, 0, 0)
+}
+func (s *Service) syncPageTerm(ctx context.Context, scope model.DWSScope, resource contract.Resource, courseID, classID string, year, term int) error {
+	_, err := s.syncPageResult(ctx, scope, resource, courseID, classID, year, term)
+	return err
+}
+
+// syncPageResult exposes continuation only after a successful atomic page commit.
+func (s *Service) syncPageResult(ctx context.Context, scope model.DWSScope, resource contract.Resource, courseID, classID string, year, term int) (bool, error) {
+	committedMore := false
 	key := string(resource)
+	if year != 0 {
+		key += ":" + strconv.Itoa(year) + ":" + strconv.Itoa(term)
+	}
 	if courseID != "" {
 		key = discussionPartitionKey(courseID, classID)
 	}
-	return s.operate(ctx, scope, key, func(ctx context.Context, l model.PlatformLease, state model.PlatformState, a contract.Adapter) (resultErr error) {
+	err := s.operate(ctx, scope, key, func(ctx context.Context, l model.PlatformLease, state model.PlatformState, a contract.Adapter) (resultErr error) {
 		l.CheckpointKey = key
 		started := time.Now()
 		pageCount := 0
@@ -279,6 +299,10 @@ func (s *Service) syncPage(ctx context.Context, scope model.DWSScope, resource c
 		}
 		if state.Connection.State != "active" {
 			return contract.ErrAuthRequired
+		}
+		ctx, resultErr = s.collectionContext(ctx, scope)
+		if resultErr != nil {
+			return resultErr
 		}
 		supported := false
 		for _, r := range a.Describe().Resources {
@@ -304,7 +328,13 @@ func (s *Service) syncPage(ctx context.Context, scope model.DWSScope, resource c
 			clear(b)
 		}
 		var page contract.Page
-		if courseID != "" {
+		if year != 0 {
+			reader, ok := a.(contract.AcademicTermReader)
+			if !ok {
+				return contract.ErrUnsupported
+			}
+			page, e = reader.SyncTerm(ctx, adapterScope(scope), contract.Session(raw), resource, year, term, cursor)
+		} else if courseID != "" {
 			partitioned, ok := a.(contract.DiscussionPartitioner)
 			if !ok {
 				return contract.ErrUnsupported
@@ -359,19 +389,15 @@ func (s *Service) syncPage(ctx context.Context, scope model.DWSScope, resource c
 		}
 		pageCount = len(records)
 		hasMore = page.HasMore
+		committedMore = page.HasMore
 		return nil
 	})
+	return committedMore, err
 }
 func validResource(r contract.Resource) bool {
-	return r == contract.Course || r == contract.Assignment || r == contract.Exam || r == contract.Progress || r == contract.Notice || r == contract.Discussion || r == contract.Material
+	return r == contract.Course || r == contract.Chapter || r == contract.Lesson || r == contract.Schedule || r == contract.Assignment || r == contract.Exam || r == contract.Progress || r == contract.Notice || r == contract.Discussion || r == contract.Material
 }
 
-func (s *Service) signal() {
-	select {
-	case s.wake <- struct{}{}:
-	default:
-	}
-}
 func (s *Service) Run(ctx context.Context) error {
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -382,49 +408,54 @@ func (s *Service) Run(ctx context.Context) error {
 			}
 		}
 	}()
-	timer := time.NewTimer(0)
-	defer timer.Stop()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// Poll performs one scan; the app owns the shared scheduling clock.
+func (s *Service) Poll(ctx context.Context) bool {
+	failed := false
+	after := ""
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-s.wake:
-		case <-timer.C:
-		}
-		after := ""
-		for {
-			targets, e := s.repo.Targets(ctx, after, 100)
-			if e != nil {
-				break
+		targets, err := s.repo.Targets(ctx, after, 100)
+		if err != nil {
+			for _, source := range []string{"chaoxing", "mooc", "ucampus"} {
+				model.RefreshFailure(ctx, source, "target_list_failed")
 			}
-			for _, c := range targets {
+			return true
+		}
+		for _, c := range targets {
+			if ctx.Err() != nil {
+				return true
+			}
+			a := s.adapters[c.Source]
+			if a == nil || a.Describe().ManualSyncOnly || c.State != "active" {
+				continue
+			}
+			model.RefreshConnection(ctx, c.Source)
+			for _, resource := range a.Describe().Resources {
 				if ctx.Err() != nil {
-					return ctx.Err()
+					return true
 				}
-				scope := scopeOf(c)
-				if c.State == "pending" || c.State == "scanned" {
-					_, _ = s.Auth(ctx, scope)
-					continue
+				err := s.Sync(ctx, scopeOf(c), resource)
+				code := ""
+				if err != nil {
+					failed = true
+					code = errorCode(err)
 				}
-				a := s.adapters[c.Source]
-				if a == nil {
-					continue
-				}
-				for _, resource := range a.Describe().Resources {
-					if ctx.Err() != nil {
-						return ctx.Err()
-					}
-					_ = s.Sync(ctx, scope, resource)
+				model.RefreshAttempt(ctx, c.Source, code)
+				if errors.Is(err, contract.ErrVerificationRequired) || errors.Is(err, contract.ErrRateLimited) {
+					break
 				}
 			}
-			if len(targets) < 100 {
-				break
-			}
-			after = targets[len(targets)-1].ID
 		}
-		timer.Reset(s.interval)
+		if len(targets) < 100 {
+			return failed
+		}
+		after = targets[len(targets)-1].ID
 	}
 }
+
 func (s *Service) Disconnect(ctx context.Context, scope model.DWSScope) error {
 	c, e := s.repo.Get(ctx, scope)
 	if e != nil {

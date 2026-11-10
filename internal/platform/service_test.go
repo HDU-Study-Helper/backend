@@ -23,6 +23,12 @@ type testRepo struct {
 	reject  bool
 }
 
+func (r *testRepo) Get(_ context.Context, s model.DWSScope) (model.PlatformConnection, error) {
+	if s.UserID != r.state.Connection.UserID || s.ConnectionID != r.state.Connection.ID {
+		return model.PlatformConnection{}, model.ErrNotFound
+	}
+	return r.state.Connection, nil
+}
 func (r *testRepo) Acquire(_ context.Context, s model.DWSScope) (model.PlatformLease, error) {
 	if s.UserID != r.state.Connection.UserID || s.ConnectionID != r.state.Connection.ID {
 		return model.PlatformLease{}, model.ErrNotFound
@@ -62,6 +68,64 @@ func (a *testAdapter) Sync(_ context.Context, _ contract.Scope, session contract
 	a.cursor = cursor
 	return a.page, a.err
 }
+
+type timestampAdapter struct {
+	*testAdapter
+	source string
+}
+
+func (a *timestampAdapter) Describe() contract.Descriptor {
+	d := a.testAdapter.Describe()
+	d.Source = a.source
+	return d
+}
+
+func TestSyncObservationTimestampDoesNotChangeRecord(t *testing.T) {
+	for _, source := range []string{"chaoxing", "mooc", "ucampus"} {
+		t.Run(source, func(t *testing.T) {
+			vault, err := credential.New([]byte(strings.Repeat("k", 32)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sealed, err := vault.Seal("owner", "connection", []byte("fixture-session"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo := &testRepo{state: model.PlatformState{Connection: model.PlatformConnection{UserID: "owner", ID: "connection", Source: source, State: "active"}, Session: sealed}}
+			at := time.Date(2026, 11, 6, 1, 0, 0, 0, time.UTC)
+			adapter := &timestampAdapter{source: source, testAdapter: &testAdapter{page: contract.Page{Records: []contract.Record{{Kind: contract.Course, ExternalID: "course", ParentID: "term", Title: "课程", Fields: map[string]any{"start_time": "2026-09-01"}, ObservedAt: at}}}}}
+			service, err := New(repo, vault, []contract.Adapter{adapter})
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope := model.DWSScope{UserID: "owner", ConnectionID: "connection"}
+			if err = service.Sync(context.Background(), scope, contract.Course); err != nil {
+				t.Fatal(err)
+			}
+			before := repo.commits[0]
+			adapter.page.Records[0].ObservedAt = at.Add(time.Hour + time.Nanosecond)
+			if err = service.Sync(context.Background(), scope, contract.Course); err != nil {
+				t.Fatal(err)
+			}
+			after := repo.commits[0]
+			if before.Hash != after.Hash || string(before.Content) != string(after.Content) || before.ExternalID != after.ExternalID || before.ParentID != after.ParentID {
+				t.Fatal("collection timestamp changed business content or identity")
+			}
+			if !after.ObservedAt.Equal(adapter.page.Records[0].ObservedAt) {
+				t.Fatal("collection timestamp was lost")
+			}
+			// Actual source time corrections must still be detected as updates.
+			adapter.page.Records[0].Fields["start_time"] = "2026-09-02"
+			if err = service.Sync(context.Background(), scope, contract.Course); err != nil {
+				t.Fatal(err)
+			}
+			if repo.commits[0].Hash == after.Hash || repo.commits[0].ExternalID != after.ExternalID || repo.commits[0].ParentID != after.ParentID {
+				t.Fatal("source time correction was ignored or changed identity")
+			}
+		})
+	}
+}
+
 func TestSyncEncryptionAndCheckpoint(t *testing.T) {
 	vault, e := credential.New([]byte(strings.Repeat("k", 32)))
 	if e != nil {

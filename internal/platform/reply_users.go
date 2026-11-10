@@ -25,6 +25,14 @@ func (s *Service) FetchReplyUsers(ctx context.Context, scope model.DWSScope, cou
 		if state.Connection.Source != "chaoxing" || state.Connection.State != "active" {
 			return contract.ErrAuthRequired
 		}
+		ctx, e := s.collectionContext(ctx, scope)
+		if e != nil {
+			return e
+		}
+		ref, _ := json.Marshal([]string{course, class})
+		if contract.CourseExcluded(ctx, adapterScope(scope), string(ref)) {
+			return nil
+		}
 		reader, ok := a.(contract.ReplyUserReader)
 		if !ok {
 			return contract.ErrUnsupported
@@ -48,7 +56,7 @@ func (s *Service) FetchReplyUsers(ctx context.Context, scope model.DWSScope, cou
 			}
 			record.Content = ""
 			safe := map[string]any{}
-			for _, key := range []string{"course_id", "class_id", "topic_id", "user_id", "user_name", "anonymous", "coverage"} {
+			for _, key := range []string{"course_id", "class_id", "topic_id", "user_id", "user_name", "anonymous", "coverage", "published_at_raw", "published_at_source", "published_at_precision", "published_at_reason", "updated_at_raw", "updated_at_source", "updated_at_precision", "updated_at_reason", "create_time", "createTime", "update_time", "updateTime", "current_user_match", "is_current_user", "participation_status", "participation_semantics"} {
 				if v, ok := record.Fields[key]; ok {
 					safe[key] = v
 				}

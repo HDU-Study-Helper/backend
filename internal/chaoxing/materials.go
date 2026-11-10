@@ -75,8 +75,7 @@ func syncMaterials(ctx context.Context, c *http.Client, v *cursor) ([]contract.R
 		v.Page = 1
 		v.MaterialTotalPages = 0
 		if len(v.MaterialFolders) == 0 {
-			v.Index++
-			v.MaterialIDs = nil
+			v.advanceCourse()
 		}
 	}
 	if len(encode(*v)) > 1<<20 {
@@ -113,10 +112,10 @@ func parseMaterials(b []byte, co course, folder materialFolder, page int) ([]con
 		}
 		path := append(append([]string{}, folder.Path...), name)
 		isFolder := kind == "afolder"
-		fields := map[string]any{
-			"course_id": co.ID, "class_id": co.Class, "data_id": id,
-			"parent_data_id": folder.ID, "path": path, "is_folder": isFolder, "file_type": kind,
-		}
+		fields := courseFields(co)
+		fields["data_id"], fields["parent_data_id"], fields["path"] = id, folder.ID, path
+		fields["is_folder"], fields["file_type"] = isFolder, kind
+		fields["coverage"], fields["body_status"], fields["body_reason"] = "material_directory", "not_collected", "file_content_not_requested"
 		walk(n, func(cell *html.Node) {
 			for cls, key := range map[string]string{"dataBody_size_stu": "size_raw", "dataBody_creater_stu": "creator", "dataBody_time_stu": "time_raw"} {
 				if class(cell, cls) {
@@ -126,6 +125,13 @@ func parseMaterials(b []byte, co course, folder materialFolder, page int) ([]con
 				}
 			}
 		})
+		aliasAuthor(fields, "creator")
+		if raw, ok := fields["time_raw"].(string); ok {
+			timeEvidence(fields, "time", raw, "dataBody_time_stu")
+			fields["time_semantics"] = "unspecified_list_time"
+		} else {
+			missingTime(fields, "time", "not_provided_by_source")
+		}
 		rows = append(rows, record(contract.Material, id, co.key(), name, "", fields))
 		if isFolder {
 			if len(path) > 32 {

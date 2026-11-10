@@ -127,7 +127,11 @@ func TestDiscussionEmptyMoreAndStrictFailures(t *testing.T) {
 		{"missing-pagination", `{"status":true,"datas":[]}`, contract.ErrParse, false},
 		{"missing-lastPage", `{"status":true,"datas":[],"poff":{}}`, contract.ErrParse, false},
 		{"missing-lastValue", `{"status":true,"datas":[],"poff":{"lastPage":false,"lastAuxValue":""}}`, contract.ErrParse, false},
-		{"missing-aux", `{"status":true,"datas":[],"poff":{"lastPage":false,"lastValue":"next"}}`, contract.ErrParse, false},
+		{"missing-aux", `{"status":true,"datas":[],"poff":{"lastPage":false,"lastValue":"next"}}`, nil, true},
+
+		{"terminal-missing-datas", `{"status":true,"poff":{"lastPage":1}}`, nil, false},
+		{"continuing-missing-datas", `{"status":true,"poff":{"lastPage":0,"lastValue":"next"}}`, contract.ErrParse, false},
+		{"null-aux", `{"status":true,"datas":[],"poff":{"lastPage":0,"lastValue":"next","lastAuxValue":null}}`, contract.ErrParse, false},
 		{"null-datas", `{"status":true,"datas":null,"poff":{"lastPage":1}}`, contract.ErrParse, false},
 		{"invalid-row", `{"status":true,"datas":[{"id":"fallback","title":"x","content":"x"}],"poff":{"lastPage":1}}`, contract.ErrParse, false},
 		{"expiry", `<form id="loginForm">`, contract.ErrAuthRequired, false},
@@ -244,5 +248,38 @@ func TestDiscussionNavigationWhitelistAndTime(t *testing.T) {
 	u, _, err = discussionURL([]byte(`<input id=t value=123><li dataname=tl><a data-url="https://groupweb.chaoxing.com/topicList"></a></li>`), co)
 	if err != nil || u.Query().Get("t") != "123" {
 		t.Fatal("hidden t lost", err)
+	}
+}
+
+func TestDiscussionContinuationWithoutAuxiliaryCursor(t *testing.T) {
+	pages := 0
+	a := fixtureAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/visit/stucoursemiddle":
+			fmt.Fprint(w, discussionMiddleFixture)
+		case "/course/topic/topicList":
+			fmt.Fprint(w, `<input id=bbsid value=fixture-bbs>`)
+		case "/course/topic/fixture-bbs/getTopicList":
+			pages++
+			if pages == 1 {
+				fmt.Fprint(w, `{"status":true,"datas":[{"uuid":"first","content":"First page"}],"poff":{"lastPage":0,"lastValue":123}}`)
+			} else {
+				if pages != 2 || r.URL.Query().Get("page") != "2" || r.URL.Query().Get("last_reply_time") != "123" || r.URL.Query().Get("lastAuxValue") != "" {
+					t.Error("required cursor lost or unexpected page")
+				}
+				fmt.Fprint(w, `{"status":true,"datas":[{"uuid":"second","content":"Second page"}],"poff":{"lastPage":1}}`)
+			}
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	})
+	initial := encode(cursor{Version: 1, Scope: testScope, Resource: discussionResource, Courses: []course{{ID: "c", Class: "k", CPI: "p"}}, Page: 1})
+	first, e := a.Sync(context.Background(), testScope, authorized(testScope), discussionResource, initial)
+	if e != nil || !first.HasMore || len(first.Records) != 1 {
+		t.Fatal("first page", e)
+	}
+	second, e := a.Sync(context.Background(), testScope, first.Session, discussionResource, first.NextCursor)
+	if e != nil || second.HasMore || second.NextCursor != "" || len(second.Records) != 1 || second.Records[0].ExternalID != "second" {
+		t.Fatal("second page", e)
 	}
 }

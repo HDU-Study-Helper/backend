@@ -20,7 +20,7 @@ type previewRepo struct{ db *DB }
 
 func (d *DB) Preview() model.PreviewRepository { return &previewRepo{d} }
 func validKind(k string) bool {
-	return k == "course" || k == "assignment" || k == "exam" || k == "progress" || k == "notice" || k == "discussion" || k == "discussion_reply_user" || k == "material"
+	return k == "course" || k == "chapter" || k == "lesson" || k == "schedule" || k == "assignment" || k == "exam" || k == "progress" || k == "notice" || k == "discussion" || k == "discussion_reply_user" || k == "material"
 }
 func (r *platformRepo) StartSync(ctx context.Context, l model.PlatformLease, kind string) error {
 	if !validKind(kind) {
@@ -39,7 +39,7 @@ func (r *platformRepo) FinishSync(ctx context.Context, l model.PlatformLease, ki
 		return model.ErrInvalidArgument
 	}
 	switch code {
-	case "", "auth_required", "unsupported", "parse_failed", "rate_limited", "invalid_argument", "upstream_unavailable":
+	case "", "auth_required", "unsupported", "parse_failed", "rate_limited", "verification_required", "invalid_argument", "upstream_unavailable":
 	default:
 		code = "internal"
 	}

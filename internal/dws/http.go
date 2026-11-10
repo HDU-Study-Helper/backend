@@ -121,6 +121,15 @@ func (s *Service) Routes() http.Handler {
 			}
 			httpkit.WriteJSON(w, http.StatusOK, challenge)
 		})
+		r.Get("/available-groups", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
+			page, err := s.AvailableGroups(r.Context(), requestScope(r), r.URL.Query().Get("cursor"))
+			if err != nil {
+				respondError(w, r, err)
+				return
+			}
+			httpkit.WriteJSON(w, 200, page)
+		})
 		r.Get("/groups", func(w http.ResponseWriter, r *http.Request) {
 			items, e := s.repo.ListGroups(r.Context(), requestScope(r))
 			if e != nil {

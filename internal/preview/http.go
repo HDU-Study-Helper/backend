@@ -14,6 +14,7 @@ import (
 )
 
 type Service struct {
+	Intervals   func() (int, int)
 	repo        model.PreviewRepository
 	descriptors map[string]contract.Descriptor
 	dwsInterval int
@@ -64,7 +65,11 @@ func (s *Service) Routes() http.Handler {
 				}
 			}
 		}
-		httpkit.WriteJSON(w, 200, map[string]any{"items": items, "poll_interval_seconds": 60, "dws_poll_interval_seconds": s.dwsInterval, "notes": []string{"只预览当前登录用户的归档，不发起上游抓取。", "每个原生对象仅保留最新状态；记录数与逻辑对象数按相同身份口径统计。", "学习平台每轮结束后等待60秒，每资源读取一页；连接多时实际间隔更长。", "最近成功表示一页已提交，不代表所有分页完成；空页成功也会更新成功时间。", "历史抓取在启用状态统计前可能没有尝试时间或耗时；最近成功可由checkpoint恢复。", "DWS按已有任务和消息归档显示；附件二进制不进入本窗口。"}})
+		seconds, dwsSeconds := 600, s.dwsInterval
+		if s.Intervals != nil {
+			seconds, dwsSeconds = s.Intervals()
+		}
+		httpkit.WriteJSON(w, 200, map[string]any{"items": items, "poll_interval_seconds": seconds, "dws_poll_interval_seconds": dwsSeconds, "notes": []string{"只预览当前登录用户的归档，不发起上游抓取。", "每个原生对象仅保留最新状态；记录数与逻辑对象数按相同身份口径统计。", "教务系统为手动采集模式，不参与定时刷新；学习平台与DWS共用信息刷新时钟，默认每轮完成后等待10分钟；间隔及暂停状态见计划任务。学习平台每资源读取一页。", "最近成功表示一页已提交，不代表所有分页完成；空页成功也会更新成功时间。", "历史抓取在启用状态统计前可能没有尝试时间或耗时；最近成功可由checkpoint恢复。", "DWS首次采集最近30天，后续按水位增量读取；空窗口也会采集成功，成功不代表有新增。旧连接的历史范围由首次采集时的设置决定。DWS按已有任务和消息归档显示；附件二进制不进入本窗口。"}})
 	})
 	r.Get("/courses", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

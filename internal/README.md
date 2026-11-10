@@ -9,11 +9,11 @@
 | `app` | 读取环境配置、构造具体模块、注入Repository/加密工具、注册chi路由，启动并停止HTTP与采集Worker | 已实现；`config.go`、`app.go`、`router.go` |
 | `users` | 应用用户CRUD、bcrypt密码、会话认证、管理员权限、CSRF、登录限流、初始管理员、嵌入管理页面 | 已实现；`service.go`、`routes.go`、`web.go`、`admin.html` |
 | `httpkit` | HTTP公共工具：严格JSON请求解析、统一JSON响应/错误、可信用户上下文 | 已实现；`httpkit.go`；不负责登录或具体业务 |
-| `contract` | 平台边界协议：`Adapter`、`Scope`、`Session`、`Record`、资源类型、平台依赖及可选讨论/认证生命周期接口 | 已实现；`platform.go`、`discussion.go`；不含SQL/HTTP路由 |
+| `contract` | 平台边界协议：`Adapter`、`Scope`、`Session`、`Record`、资源类型、平台依赖及可选讨论/认证生命周期接口 | 已实现；`platform.go`、`discussion.go`、`academic.go`（可选密码登录/学期读取）；不含SQL/HTTP路由 |
 | `model` | 中央数据对象、业务存储接口和安全错误；用户、平台连接、归档、预览、回复者等对象 | 已实现；`model.go`、`platform.go`、`preview.go`、`course_preview.go`、`reply_users.go` |
 | `dbbridge` | 唯一PostgreSQL实现：连接池、迁移、SQL、事务、用户/会话、DWS及学习平台Repository、租约、去重、预览统计 | 已实现；`db.go`、`migrate.go`、`users.go`、`dws.go`、`platform.go`、`preview.go`等 |
 | `credential` | AES-256-GCM加解密，按用户/连接绑定；官方CLI工作区的安全打包/解包 | 已实现；`vault.go`、`archive.go`；不负责平台登录，不自行持有数据库 |
-| `platform` | 学习通/MOOC/U校园的公共应用服务：授权、状态轮询、会话加密、资源同步、讨论课程分区、回复者按需归档和HTTP入口 | 已实现；`service.go`、`http.go`、`discussion.go`、`reply_users.go`、`import.go` |
+| `platform` | 学习通/MOOC/U校园/教务的公共应用服务：授权、状态轮询、会话加密、资源同步、讨论课程分区、回复者按需归档和HTTP入口 | 已实现；`service.go`、`http.go`、`discussion.go`、`reply_users.go`、`import.go` |
 | `chaoxing` | 学习通上游协议适配：二维码、Cookie会话、课程/作业/考试安排/进度/通知/讨论/资料目录及按需回复用户读取 | 已实现；`adapter.go`、`read.go`、`discussion.go`、`materials.go`、`discussion_reply_users.go`；具体覆盖见本目录README |
 | `mooc` | 中国大学MOOC/SPOC上游协议适配：二维码、课程与期次、安全任务目录、明确源进度字段 | 已实现；`client.go`、`auth.go`、`sync.go`；公告未支持，真实覆盖见本目录README |
 | `ucampus` | U校园AI上游协议适配：SSO二维码、WebSocket状态、票据/账户校验、门户课程和受限教材任务/进度 | 已实现；`adapter.go`、`qr.go`、`cookies.go`；内容端annotator要求见本目录README |
@@ -21,8 +21,10 @@
 | `preview` | 面向管理页的只读预览API：连接/资源抓取概览、归档分页、学习通课程分组过滤 | 已实现；`http.go`；只读数据库，不发起上游抓取 |
 | `bridge` | 将来模块间通信的进程内Port与版本化请求/响应协议 | 本包保留 `demo.echo`；`agent.Service` 另实现同一 Port 的 Agent 调度和后端服务接入，无消息总线或真实通知渠道 |
 | `trigger` | 独立业务变更Port：事务提交后尽力投递安全引用和ChangedFields，默认Noop；覆盖除DWS message外的已接入业务采集变更 | 已实现端口；`trigger.go`；自定义Handler可订阅Created/Updated/Deleted，Deleted仅协议预留，当前不判断上游删除；无Agent、数据库trigger、outbox、队列或重试 |
-| `jwxt` | 教务系统的工作区及后续开发约定 | 仅README，无Go实现；未接入运行服务 |
-| `agent` | 通用框架的内部服务和 Bridge 适配 | 已实现；`service.go`；主体在 `../../../agent/framework`，无业务 Agent 或 HTTP 接线 |
+| `schedule` | 教学周日程CRUD、动态时间状态、永久/临时修改、完整课表快照展开；HTTP和内部Bridge | 已接入；新增v8 schedules；隔离PostgreSQL验收，真实教务仍未验收 |
+| `jwxt` | 杭电 SSO 账号密码登录、Cookie 会话、按学期手动读取课表和已选课程 | 已接入；`client.go`、`auth.go`、`read.go`；仅离线 fixture，默认不参加定时采集，未真实验收 |
+| `agentadmin` | Agent 临时管理 HTTP 与页面、加密框架配置、实例/记忆/运行管理 | 已实现；`http.go`、`settings.go`、`agents.html`；App 启动时装配，管理员认证与 CSRF 复用 users |
+| `agent` | 通用框架的内部服务和 Bridge 适配 | 已实现；`service.go`；主体在 `../../agent/framework`，无业务 Agent；管理 HTTP 在 agentadmin |
 | `handle` | 未来统一用例编排层的工作区 | 当前空目录；现阶段编排分别在`platform`、`users`、`dws`，尚未统一迁入handle |
 
 `*_test.go` 为测试，不是运行入口。上述“已实现”表示存在代码并接入相应流程，不代表所有外部平台、所有账号和所有资源都经过真实验证。实际能力和限制以平台README与根`DATA-CATALOG.md`为准。
@@ -43,7 +45,7 @@
 
 ### platform 和各平台包
 
-- `chaoxing/mooc/ucampus` 只理解各自上游请求、Cookie/签名、响应和分页。不写SQL、不注册中心HTTP路由、不自行启动轮询循环。
+- `chaoxing/mooc/ucampus/jwxt` 只理解各自上游请求、Cookie/签名、响应和分页。不写SQL、不注册中心HTTP路由、不自行启动轮询循环。
 - `platform` 不应复制上游解析，而是使用注入的Adapter；它负责中央权限范围、持久化和采集调度。
 - `platform/import.go` 当前为U校园合法会话导入直接引用ucampus，属于现有专用导入路径，不能误称整个协调层完全不依赖具体平台。
 
@@ -69,7 +71,7 @@
 
 ### bridge 和 agent 的内部接入
 
-`agent.Service` 已实现 `bridge.Port` 的 `agent.run`，支持受控同步跨 Agent 调度。框架工具经 BackendBridge 调用通知/数据服务；dbbridge 提供按当前用户和 active 平台连接限定的只读数据投影，不暴露任意 SQL 或凭据。当前 HTTP App 仍使用 Demo echo，不自动触发 Agent。详见 [框架说明](../../agent/framework/README.md)。
+`agent.Service` 已实现 `bridge.Port` 的 `agent.run`，支持受控同步跨 Agent 调度。框架工具经 BackendBridge 调用通知/数据服务；dbbridge 提供按当前用户和 active 平台连接限定的只读数据投影，不暴露任意 SQL 或凭据。当前 HTTP App 保留 Demo echo，另由 agentadmin 提供受保护的 Agent 管理和手动运行入口；采集事件不会自动触发 Agent。详见 [框架说明](../../agent/framework/README.md)。
 
 ## 3. 当前运行时调用关系
 
@@ -113,7 +115,7 @@ dbbridge对采集业务的成功提交还会调用`trigger.Handler`，默认`Noo
 |---|---|
 | 改环境变量、注册平台、HTTP地址、优雅停机 | app；入口cmd/api |
 | 改登录、权限、管理员或管理页交互 | users；公共JSON逻辑在httpkit |
-| 改二维码/平台响应解析、上游参数或资源字段 | 对应chaoxing/mooc/ucampus；钉钉为dws |
+| 改二维码/平台响应解析、上游参数或资源字段 | 对应chaoxing/mooc/ucampus/jwxt；钉钉为dws |
 | 改轮询、加密提交、讨论课程调度 | platform；钉钉调度在dws |
 | 新增资源接口或可选平台能力 | contract，然后修所有调用方和实现 |
 | 新增中央对象、Repository方法 | model，然后dbbridge及调用服务 |

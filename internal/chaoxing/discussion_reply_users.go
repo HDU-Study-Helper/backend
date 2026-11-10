@@ -32,6 +32,9 @@ func (a *adapter) DiscussionReplyUsers(ctx context.Context, scope contract.Scope
 	if !s.Authorized {
 		return fail, contract.ErrAuthRequired
 	}
+	if contract.CourseExcluded(ctx, scope, (course{ID: courseID, Class: classID}).key()) {
+		return contract.Page{Records: []contract.Record{}, Session: save(s, j)}, nil
+	}
 	courses, err := fetchCourses(ctx, c)
 	if err != nil {
 		return fail, err
@@ -78,6 +81,19 @@ func (a *adapter) DiscussionReplyUsers(ctx context.Context, scope contract.Scope
 				return fail, contract.ErrParse
 			}
 			ids[row.ExternalID] = true
+		}
+		identity := replyCurrentIdentity(page.Client)
+		for i := range rows {
+			fields := rows[i].Fields
+			fields["participation_status"] = "reply_observed"
+			fields["participation_semantics"] = "top_level_reply_not_submission_receipt"
+			fields["current_user_match"] = "unknown"
+			if fields["anonymous"] != true && identity != "" {
+				if uid, ok := fields["user_id"].(string); ok && uid != "" {
+					fields["is_current_user"] = uid == identity
+					fields["current_user_match"] = "verified_cookie_uid"
+				}
+			}
 		}
 		out.Records = append(out.Records, rows...)
 		if !more {
@@ -134,6 +150,29 @@ func verifyReplyTopic(ctx context.Context, page discussionPage, co course, topic
 		last, aux = next, nextAux
 	}
 	return contract.ErrInvalid
+}
+
+// UID is account identity evidence kept private; conflicting cookies fail closed.
+func replyCurrentIdentity(c *http.Client) string {
+	if c.Jar == nil {
+		return ""
+	}
+	u, _ := url.Parse("https://groupweb.chaoxing.com")
+	identity := ""
+	for _, cookie := range c.Jar.Cookies(u) {
+		if cookie.Name != "_uid" && cookie.Name != "UID" {
+			continue
+		}
+		value := strings.TrimSpace(cookie.Value)
+		if value == "" {
+			continue
+		}
+		if identity != "" && identity != value {
+			return ""
+		}
+		identity = value
+	}
+	return identity
 }
 
 func parseReplyUsers(b []byte, courseID, classID, topicID string) ([]contract.Record, string, bool, error) {
@@ -207,6 +246,13 @@ func parseReplyUsers(b []byte, courseID, classID, topicID string) ([]contract.Re
 			}
 		}
 		fields["user_name"] = name
+		for _, key := range []string{"create_time", "createTime", "update_time", "updateTime"} {
+			if raw := scalar(row[key]); raw != "" {
+				fields[key] = raw
+			}
+		}
+		aliasTime(fields, "published_at", "create_time", "createTime")
+		aliasTime(fields, "updated_at", "update_time", "updateTime")
 		out = append(out, record(discussionReplyUserResource, id, topicID, name, "", fields))
 	}
 	return out, next, !end, nil

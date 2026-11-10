@@ -22,6 +22,7 @@ type Dependencies struct {
 	Providers  map[string]f.ModelProvider
 	Search     f.SearchProvider
 	Backend    bridge.Port
+	Schedules  bridge.Port
 }
 
 func New(d Dependencies) (*Service, error) {
@@ -34,6 +35,11 @@ func New(d Dependencies) (*Service, error) {
 	backend := BackendBridge{Port: d.Backend}
 	if err := (f.Builtins{Repository: d.Repository, Search: d.Search, Dispatcher: dispatch, Notifications: backend, Data: backend}).Register(tools); err != nil {
 		return nil, err
+	}
+	if d.Schedules != nil {
+		if err := RegisterScheduleTools(tools, d.Schedules); err != nil {
+			return nil, err
+		}
 	}
 	s.Runtime = f.NewRuntime(d.Repository, tools, d.Providers)
 	return s, nil
@@ -53,10 +59,10 @@ func (s *Service) Call(ctx context.Context, req bridge.Request) (bridge.Reply, e
 		return bridge.Reply{}, f.Fail("INVALID_ARGUMENT", "invalid run payload")
 	}
 	result, err := s.Run(ctx, req.OwnerID, run)
-	if err != nil {
-		return bridge.Reply{}, err
+	raw, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		return bridge.Reply{}, marshalErr
 	}
-	raw, err := json.Marshal(result)
 	return bridge.Reply{Version: bridge.Version, Operation: req.Operation, Payload: raw}, err
 }
 
@@ -68,6 +74,15 @@ func (b DispatchBridge) Dispatch(ctx context.Context, e f.ExecutionContext, req 
 	}
 	if b.Port == nil {
 		return f.RunResult{}, f.Fail("NOT_IMPLEMENTED", "dispatch bridge unavailable")
+	}
+	if service, ok := b.Port.(*Service); ok {
+		target, lookupErr := service.Registry.Repository.GetAgent(ctx, f.Scope{OwnerID: e.Scope.OwnerID, AgentID: req.AgentID})
+		if lookupErr != nil {
+			return f.RunResult{}, lookupErr
+		}
+		if target.Type == "worker" && e.Scope.WorkflowID == "" {
+			return f.RunResult{}, f.Fail("INVALID_ARGUMENT", "Worker业务调用必须在agent_dispatch顶层提供workflow:{workflow_id,version}；context中的Workflow文本不能绑定执行范围，请使用已核实的ID与整数版本重新派发")
+		}
 	}
 	req.Trigger = f.AgentDispatch
 	raw, err := json.Marshal(req)
@@ -121,6 +136,11 @@ func (b BackendBridge) Query(ctx context.Context, s f.Scope, q f.Query) (result 
 	return
 }
 
+func (b BackendBridge) SearchKeywords(ctx context.Context, s f.Scope, q f.KeywordSearchRequest) (result f.KeywordSearchResult, err error) {
+	err = b.call(ctx, s, "data.search", q, &result)
+	return
+}
+
 // BackendServices is a host-side bridge adapter. Notifications remain owned by the backend.
 // A missing notification implementation fails explicitly; tests can inject a mock.
 type BackendServices struct {
@@ -159,6 +179,16 @@ func (b BackendServices) Call(ctx context.Context, req bridge.Request) (bridge.R
 			return bridge.Reply{}, f.Fail("INVALID_ARGUMENT", "invalid query")
 		}
 		result, err = b.Data.Query(ctx, scope, q)
+	case "data.search":
+		search, ok := b.Data.(f.KeywordSearchService)
+		if !ok {
+			return bridge.Reply{}, f.Fail("NOT_IMPLEMENTED", "keyword search unavailable")
+		}
+		var q f.KeywordSearchRequest
+		if json.Unmarshal(req.Payload, &q) != nil {
+			return bridge.Reply{}, f.Fail("INVALID_ARGUMENT", "invalid keyword search")
+		}
+		result, err = search.SearchKeywords(ctx, scope, q)
 	default:
 		return bridge.Reply{}, bridge.ErrUnsupported
 	}

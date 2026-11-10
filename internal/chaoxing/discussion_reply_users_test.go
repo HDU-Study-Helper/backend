@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -60,7 +62,7 @@ func TestDiscussionReplyUsersPaginationPrivacy(t *testing.T) {
 			if r.URL.Query().Get("lastValue") != "" {
 				t.Error("initial lastValue")
 			}
-			fmt.Fprint(w, `{"status":true,"datas":[{"id":101,"puid":12,"createrName":"张三","content":"PRIVATE_BODY","images":["PRIVATE_IMAGE"],"files":["PRIVATE_FILE"],"phone":"PRIVATE_PHONE","studentNo":"PRIVATE_STUDENT","secretURLs":"PRIVATE_URL","subreply":[{"id":102,"createrName":"Nested"}]}],"poff":{"lastPage":false,"lastValue":101}}`)
+			fmt.Fprint(w, `{"status":true,"datas":[{"id":101,"puid":12,"createrName":"张三","content":"PRIVATE_BODY","images":["PRIVATE_IMAGE"],"files":["PRIVATE_FILE"],"phone":"PRIVATE_PHONE","studentNo":"PRIVATE_STUDENT","secretURLs":"PRIVATE_URL","create_time":1794139200000,"subreply":[{"id":102,"createrName":"Nested"}]}],"poff":{"lastPage":false,"lastValue":101}}`)
 		} else {
 			if r.URL.Query().Get("lastValue") != "101" {
 				t.Error("reply continuation")
@@ -75,6 +77,9 @@ func TestDiscussionReplyUsersPaginationPrivacy(t *testing.T) {
 	row := p.Records[0]
 	if row.ExternalID != "101" || row.ParentID != "topic" || row.Kind != discussionReplyUserResource || row.Title != "张三" || row.Content != "" || row.Fields["user_id"] != "12" || row.Fields["coverage"] != "top_level_only" {
 		t.Fatalf("record %+v", row)
+	}
+	if row.Fields["published_at_raw"] != "1794139200000" || row.Fields["participation_status"] != "reply_observed" || row.Fields["current_user_match"] != "unknown" {
+		t.Fatal(row.Fields)
 	}
 	if _, ok := p.Records[1].Fields["user_id"]; ok {
 		t.Fatal("anonymous identity retained")
@@ -183,6 +188,20 @@ func TestDiscussionReplyUsersOwnershipAndBudgets(t *testing.T) {
 				t.Fatal("unverified topic read replies")
 			}
 		})
+	}
+}
+
+func TestReplyCurrentIdentityConflictsFailClosed(t *testing.T) {
+	jar, _ := cookiejar.New(nil)
+	u, _ := url.Parse("https://groupweb.chaoxing.com")
+	c := &http.Client{Jar: jar}
+	jar.SetCookies(u, []*http.Cookie{{Name: "_uid", Value: "12", Path: "/"}})
+	if replyCurrentIdentity(c) != "12" {
+		t.Fatal("identity not read")
+	}
+	jar.SetCookies(u, []*http.Cookie{{Name: "UID", Value: "99", Path: "/"}})
+	if replyCurrentIdentity(c) != "" {
+		t.Fatal("conflicting identity accepted")
 	}
 }
 

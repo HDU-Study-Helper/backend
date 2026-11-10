@@ -10,12 +10,34 @@ import (
 	"academic/backend/internal/contract"
 	"academic/backend/internal/httpkit"
 	"academic/backend/internal/model"
+	"academic/backend/internal/schedule"
 	"github.com/go-chi/chi/v5"
 )
 
 // Routes must be mounted beneath session/CSRF middleware.
 func (s *Service) Routes() http.Handler {
 	r := chi.NewRouter()
+	r.Post("/{source}/login", func(w http.ResponseWriter, r *http.Request) {
+		u, ok := httpkit.CurrentUser(r.Context())
+		if !ok {
+			httpkit.Error(w, r, 401, "unauthenticated", "请先登录")
+			return
+		}
+		var in struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if httpkit.DecodeJSON(w, r, &in) != nil {
+			return
+		}
+		defer func() { in.Password = "" }()
+		c, e := s.LoginPassword(r.Context(), u.ID, chi.URLParam(r, "source"), in.Username, in.Password)
+		if e != nil {
+			failHTTP(w, r, e)
+			return
+		}
+		httpkit.WriteJSON(w, 201, c)
+	})
 	r.Get("/sources", func(w http.ResponseWriter, r *http.Request) {
 		httpkit.WriteJSON(w, 200, map[string]any{"items": s.Sources()})
 	})
@@ -100,15 +122,41 @@ func (s *Service) Routes() http.Handler {
 		})
 		r.Post("/sync", func(w http.ResponseWriter, r *http.Request) {
 			var in struct {
-				Resource contract.Resource `json:"resource"`
-				CourseID string            `json:"course_id,omitempty"`
-				ClassID  string            `json:"class_id,omitempty"`
+				Resource     contract.Resource  `json:"resource"`
+				CourseID     string             `json:"course_id,omitempty"`
+				ClassID      string             `json:"class_id,omitempty"`
+				AcademicYear int                `json:"academic_year,omitempty"`
+				Term         int                `json:"term,omitempty"`
+				Calendar     *schedule.Calendar `json:"calendar,omitempty"`
 			}
 			if httpkit.DecodeJSON(w, r, &in) != nil {
 				return
 			}
+			if in.Resource == contract.Schedule {
+				if in.Calendar == nil || in.CourseID != "" || in.ClassID != "" {
+					failHTTP(w, r, contract.ErrInvalid)
+					return
+				}
+				result, e := s.SyncTimetable(r.Context(), requestScope(r), model.Semester{AcademicYear: in.AcademicYear, Term: in.Term}, *in.Calendar)
+				if e != nil {
+					failHTTP(w, r, e)
+					return
+				}
+				httpkit.WriteJSON(w, 200, result)
+				return
+			}
+			if in.Calendar != nil {
+				failHTTP(w, r, contract.ErrInvalid)
+				return
+			}
 			var syncErr error
-			if in.CourseID != "" || in.ClassID != "" {
+			if in.AcademicYear != 0 || in.Term != 0 {
+				if in.CourseID != "" || in.ClassID != "" {
+					failHTTP(w, r, contract.ErrInvalid)
+					return
+				}
+				syncErr = s.SyncTerm(r.Context(), requestScope(r), in.Resource, in.AcademicYear, in.Term)
+			} else if in.CourseID != "" || in.ClassID != "" {
 				if in.Resource != contract.Discussion {
 					failHTTP(w, r, contract.ErrInvalid)
 					return
@@ -192,7 +240,7 @@ func failHTTP(w http.ResponseWriter, r *http.Request, e error) {
 		status = 422
 	case errors.Is(e, contract.ErrAuthRequired):
 		status = 409
-	case errors.Is(e, contract.ErrRateLimited):
+	case errors.Is(e, contract.ErrRateLimited), errors.Is(e, contract.ErrVerificationRequired):
 		status = 429
 	}
 	httpkit.Error(w, r, status, code, "平台操作未完成："+code)

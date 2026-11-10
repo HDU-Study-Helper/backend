@@ -19,3 +19,11 @@ DWS 每次操作必须传可信 `DWSScope{UserID,ConnectionID}`；所有查询�
 ## Agent Framework 存储（v5）
 
 `DB.Agents()` 实现框架 Repository；`DB.AgentData()` 提供固定 `platform_records` 字段白名单的只读投影。所有身份查询按 owner 范围，私有记忆进一步按 agent 范围。v5 新建 agent_instances、agent_memories、agent_workflows、agent_workflow_versions、agent_runs；沿用原迁移账本与连接池，没有第二套数据库基础设施。Workflow 定义与版本快照同事务提交，parent 同 owner 且创建后不可变。工具不会访问会话、凭据或任意表。完整结构和验证见 [框架文档](../../../agent/framework/README.md)。
+
+Agent 管理页新增 v6：`DB.AgentAdmin()` 保存加密配置密文及版本，并按 owner/agent 读取最近运行记录。密钥加解密由现有 credential.Vault 处理，dbbridge 不保存明文 Key。
+
+教务补充：迁移v7仅扩充 platform_connections.source CHECK 允许 jwxt；旧迁移不变。教务复用平台 Repository 保存加密会话及 course/schedule，按 resource:year:term 存 checkpoint；Targets SQL 排除 jwxt，手动 Acquire/Commit 仍校验用户、连接与租约。新增实现仅做离线验收，本轮未执行数据库迁移或真实数据库测试。
+
+## 日程（v8）
+
+Schedules()实现model.ScheduleRepository，全部SQL在schedules.go。schedules仅新增一张表，按用户/学期/教学周索引。Create/Update/Delete与完整课表提交复用用户行锁；TIMETABLE按来源身份唯一。platformRepo.CommitTimetable复用原Commit事务、连接状态和fencing校验，将完整课表归档、TIMETABLE刷新、Session/checkpoint一起提交，失败整体回滚。修改覆盖与历史在mod JSONB中，不清理USER/AGENT。测试库中覆盖实际PostgreSQL迁移、同步、回滚、隔离和HTTP接线，详见../schedule/README.md。

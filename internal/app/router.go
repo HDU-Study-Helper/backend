@@ -5,11 +5,16 @@ import (
 	"errors"
 	"net/http"
 
+	"academic/backend/internal/academic"
+	"academic/backend/internal/agentadmin"
 	"academic/backend/internal/bridge"
 	"academic/backend/internal/dws"
 	"academic/backend/internal/httpkit"
 	"academic/backend/internal/platform"
 	"academic/backend/internal/preview"
+	"academic/backend/internal/runcontrol"
+	"academic/backend/internal/schedule"
+	"academic/backend/internal/scheduler"
 	"academic/backend/internal/users"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -19,6 +24,21 @@ func Router(userService *users.Service, dwsService *dws.Service, port bridge.Por
 	return routerWithPreview(userService, dwsService, port, nil, platforms...)
 }
 func routerWithPreview(userService *users.Service, dwsService *dws.Service, port bridge.Port, inspect *preview.Service, platforms ...*platform.Service) http.Handler {
+	return routerWithAgentAdmin(userService, dwsService, port, inspect, nil, platforms...)
+}
+func routerWithAgentAdmin(userService *users.Service, dwsService *dws.Service, port bridge.Port, inspect *preview.Service, console *agentadmin.Console, platforms ...*platform.Service) http.Handler {
+	return routerWithTasks(userService, dwsService, port, inspect, console, nil, platforms...)
+}
+func routerWithTasks(userService *users.Service, dwsService *dws.Service, port bridge.Port, inspect *preview.Service, console *agentadmin.Console, refresh *scheduler.Task, platforms ...*platform.Service) http.Handler {
+	return routerWithSchedules(userService, dwsService, port, inspect, console, refresh, nil, platforms...)
+}
+func routerWithSchedules(userService *users.Service, dwsService *dws.Service, port bridge.Port, inspect *preview.Service, console *agentadmin.Console, refresh *scheduler.Task, schedules *schedule.Service, platforms ...*platform.Service) http.Handler {
+	return routerWithControl(userService, dwsService, port, inspect, console, refresh, schedules, nil, platforms...)
+}
+func routerWithControl(userService *users.Service, dwsService *dws.Service, port bridge.Port, inspect *preview.Service, console *agentadmin.Console, refresh *scheduler.Task, schedules *schedule.Service, control *runcontrol.Service, platforms ...*platform.Service) http.Handler {
+	return routerWithAcademic(userService, dwsService, port, inspect, console, refresh, schedules, control, nil, platforms...)
+}
+func routerWithAcademic(userService *users.Service, dwsService *dws.Service, port bridge.Port, inspect *preview.Service, console *agentadmin.Console, refresh *scheduler.Task, schedules *schedule.Service, control *runcontrol.Service, archive *academic.Service, platforms ...*platform.Service) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -38,10 +58,31 @@ func routerWithPreview(userService *users.Service, dwsService *dws.Service, port
 		return r
 	}
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/admin", http.StatusSeeOther) })
+	if console != nil {
+		r.Get("/admin/agents", console.Page)
+	}
+	r.Get("/admin/tasks", scheduler.Page)
+	if archive != nil {
+		r.Get("/admin/academic", archive.Page)
+	}
 	r.Mount("/admin", userService.Web())
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Group(func(r chi.Router) {
 			r.Use(userService.Middleware)
+
+			r.Mount("/tasks", scheduler.Routes(refresh))
+			if archive != nil {
+				r.Mount("/academic", archive.Routes())
+			}
+			if control != nil {
+				r.Mount("/control", control.Routes())
+			}
+			if schedules != nil {
+				r.Mount("/schedules", schedules.Routes())
+			}
+			if console != nil {
+				r.Mount("/agents", console.Routes())
+			}
 			if inspect != nil {
 				r.Mount("/preview", inspect.Routes())
 			}

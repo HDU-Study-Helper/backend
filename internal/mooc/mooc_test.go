@@ -150,11 +150,17 @@ func TestQRExpiredAndInvalid(t *testing.T) {
 	}
 }
 
-const termFixture = `{"code":0,"result":{"lastLearnUnitId":71,"mocTermDto":{"id":101,"chapters":[{"id":1,"lessons":[{"id":2,"units":[{"id":71,"contentId":81,"contentType":2,"name":"Quiz fixture","test":{"submitStatus":0,"studentScore":0,"submitEndTime":1800000000000},"cookie":"must not escape","answer":"must not escape","url":"https://example.invalid/?token=secret"},{"id":72,"contentId":82,"contentType":6,"name":"Exam fixture","test":{"usedTryCount":0}}]}],"homeworks":[{"id":73,"contentId":83,"unitId":74,"name":"Homework fixture","test":{"evaluateEnd":1800000000001,"peerReviewStatus":"pending"}}]}]}}}`
+const termFixture = `{"code":0,"result":{"lastLearnUnitId":71,"mocTermDto":{"id":101,"chapters":[{"id":1,"lessons":[{"id":2,"units":[{"id":71,"contentId":81,"contentType":2,"name":"Quiz fixture","test":{"submitStatus":0,"studentScore":0,"submitEndTime":1800000000000},"cookie":"must not escape","answer":"must not escape","url":"https://example.invalid/?token=secret"},{"id":72,"contentId":82,"contentType":6,"name":"Exam fixture","test":{"type":6,"usedTryCount":0}}]}],"homeworks":[{"id":73,"contentId":83,"unitId":74,"name":"Homework fixture","test":{"evaluateEnd":1800000000001,"peerReviewStatus":"pending"}}]}]}}}`
 
 func TestCourseTwoPagesAndTerms(t *testing.T) {
 	a := testAdapter(func(r *http.Request) (*http.Response, error) {
+		if r.Method == "GET" {
+			return response(`window.courseDto={id:10};<div class="m-infomation_content-section">Introduction</div>`), nil
+		}
 		r.ParseForm()
+		if strings.Contains(r.URL.Path, "getLastLearnedMocTermDto") {
+			return response(`{"code":0,"result":{"mocTermDto":{"id":` + r.Form.Get("termId") + `,"chapters":[]}}}`), nil
+		}
 		typ := r.Form.Get("courseType")
 		p := r.Form.Get("p")
 		if typ == "2" {
@@ -168,25 +174,104 @@ func TestCourseTwoPagesAndTerms(t *testing.T) {
 	})
 	s := sessionFor(t, a, scope, "alpha")
 	cur := ""
-	ids := []string{}
-	for i := 0; i < 3; i++ {
+	ids := map[string]bool{}
+	for i := 0; i < 9; i++ {
 		p, e := a.Sync(context.Background(), scope, s, contract.Course, cur)
 		if e != nil {
 			t.Fatal(e)
 		}
 		for _, r := range p.Records {
-			ids = append(ids, r.ExternalID)
+			ids[r.ExternalID] = true
 		}
-		if i < 2 && !p.HasMore {
+		if i < 8 && !p.HasMore {
 			t.Fatal("lost next page")
 		}
-		if i == 2 && p.HasMore {
+		if i == 8 && p.HasMore {
 			t.Fatal("did not finish")
 		}
 		cur = p.NextCursor
 	}
-	if len(ids) != 2 || ids[0] == ids[1] {
+	if len(ids) != 2 {
 		t.Fatal(ids)
+	}
+}
+func TestCourseWithoutSchoolUsesOfficialIDOnlyReferer(t *testing.T) {
+	a := testAdapter(func(r *http.Request) (*http.Response, error) {
+		if strings.Contains(r.URL.Path, "getMyLearnedCoursePanelList") {
+			return response(`{"code":0,"result":{"result":[{"id":10,"name":"Fixture","termPanel":{"id":101},"schoolPanel":null}],"pagination":{"totalPageCount":1}}}`), nil
+		}
+		if r.Header.Get("Referer") != origin+"/learn/10?tid=101" {
+			t.Fatal("empty school must not introduce a hyphen", r.Header.Get("Referer"))
+		}
+		return response(termFixture), nil
+	})
+	s := sessionFor(t, a, scope, "alpha")
+	p, e := a.Sync(context.Background(), scope, s, contract.Assignment, "")
+	if e != nil || !p.HasMore {
+		t.Fatal("school name is optional, not a course identity", p, e)
+	}
+	p, e = a.Sync(context.Background(), scope, p.Session, contract.Assignment, p.NextCursor)
+	if e != nil || len(p.Records) != 2 {
+		t.Fatal(p, e)
+	}
+}
+func TestCatalogReadRetriesTransientGatewayOnly(t *testing.T) {
+	calls := 0
+	a := testAdapter(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if calls < 3 {
+			res := response("gateway unavailable")
+			res.StatusCode = 502
+			return res, nil
+		}
+		return response(`{"code":0,"result":{"result":[],"pagination":{"totalPageCount":0}}}`), nil
+	})
+	_, h, e := a.restore(scope, sessionFor(t, a, scope, "alpha"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = rpc(context.Background(), h, "learnerCourseRpcBean.getMyLearnedCoursePanelList", origin+"/", url.Values{}); e != nil || calls != 3 {
+		t.Fatal(e, calls)
+	}
+	for _, status := range []int{401, 429, 500} {
+		calls = 0
+		a = testAdapter(func(*http.Request) (*http.Response, error) {
+			calls++
+			res := response("not a catalog")
+			res.StatusCode = status
+			return res, nil
+		})
+		_, h, e = a.restore(scope, sessionFor(t, a, scope, "alpha"))
+		if e != nil {
+			t.Fatal(e)
+		}
+		_, e = rpc(context.Background(), h, "learnerCourseRpcBean.getMyLearnedCoursePanelList", origin+"/", url.Values{})
+		if e == nil || calls != 1 {
+			t.Fatal("permanent/auth/rate error retried", status, e, calls)
+		}
+	}
+	calls = 0
+	a = testAdapter(func(*http.Request) (*http.Response, error) { calls++; return response(`{"code":0,"result":null}`), nil })
+	_, h, _ = a.restore(scope, sessionFor(t, a, scope, "alpha"))
+	_, e = rpc(context.Background(), h, "learnerCourseRpcBean.getMyLearnedCoursePanelList", origin+"/", nil)
+	if !errors.Is(e, contract.ErrParse) || calls != 1 {
+		t.Fatal("schema errors must not retry", e, calls)
+	}
+}
+func TestCatalogRetryRespectsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	a := testAdapter(func(*http.Request) (*http.Response, error) {
+		calls++
+		cancel()
+		res := response("gateway unavailable")
+		res.StatusCode = 503
+		return res, nil
+	})
+	_, h, _ := a.restore(scope, sessionFor(t, a, scope, "alpha"))
+	_, e := rpc(ctx, h, "courseBean.getLastLearnedMocTermDto", origin+"/", nil)
+	if !errors.Is(e, context.Canceled) || calls != 1 {
+		t.Fatal(e, calls)
 	}
 }
 func TestTaskAndProgressReadOnly(t *testing.T) {
@@ -204,7 +289,7 @@ func TestTaskAndProgressReadOnly(t *testing.T) {
 	for _, r := range []contract.Resource{contract.Assignment, contract.Exam, contract.Progress} {
 		c, _ := newCursor(scope, r, "")
 		c.Done = true
-		c.Courses = []course{{ID: "10", Term: "101", School: "TEST", Type: 2}}
+		c.Courses = []course{{ID: "10", Term: "101", School: "TEST", Type: 2, Discovered: true}}
 		b, _ := json.Marshal(c)
 		raw := base64Cursor(b)
 		p, e := a.Sync(context.Background(), scope, s, r, raw)
@@ -256,7 +341,7 @@ func TestIsolationParseUnsupportedCancel(t *testing.T) {
 	if strings.Join(seen, ",") != "alpha,beta,alpha" || client.Jar != nil || client.Timeout != time.Minute {
 		t.Fatal("client isolation")
 	}
-	_, e := a.Sync(context.Background(), scope, nil, contract.Notice, "")
+	_, e := a.Sync(context.Background(), scope, nil, contract.Resource("unknown"), "")
 	if !errors.Is(e, contract.ErrUnsupported) {
 		t.Fatal(e)
 	}

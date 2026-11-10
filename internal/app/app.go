@@ -8,15 +8,22 @@ import (
 	"net/http"
 	"time"
 
+	"academic/backend/internal/academic"
+	"academic/backend/internal/agentadmin"
 	"academic/backend/internal/bridge"
 	"academic/backend/internal/chaoxing"
 	"academic/backend/internal/contract"
 	"academic/backend/internal/credential"
 	"academic/backend/internal/dbbridge"
 	"academic/backend/internal/dws"
+	"academic/backend/internal/jwxt"
+	"academic/backend/internal/model"
 	"academic/backend/internal/mooc"
 	"academic/backend/internal/platform"
 	"academic/backend/internal/preview"
+	"academic/backend/internal/runcontrol"
+	"academic/backend/internal/schedule"
+	"academic/backend/internal/scheduler"
 	"academic/backend/internal/trigger"
 	"academic/backend/internal/ucampus"
 	"academic/backend/internal/users"
@@ -24,6 +31,11 @@ import (
 
 // App owns process resources. Only this composition layer knows concrete repositories.
 type App struct {
+	academic  *academic.Service
+	control   *runcontrol.Service
+	schedules *schedule.Service
+	refresh   *scheduler.Task
+	agents    *agentadmin.Console
 	config    Config
 	db        *dbbridge.DB
 	users     *users.Service
@@ -91,18 +103,49 @@ func NewWithTrigger(ctx context.Context, cfg Config, handler trigger.Handler) (*
 		if e != nil {
 			return nil, e
 		}
-		ps, e = platform.New(db.Platforms(), vault, []contract.Adapter{cx, mc, uc})
+		jw, e := jwxt.New(deps)
+		if e != nil {
+			return nil, e
+		}
+		ps, e = platform.New(db.Platforms(), vault, []contract.Adapter{cx, mc, uc, jw})
 		if e != nil {
 			return nil, e
 		}
 	}
-	app := &App{config: cfg, db: db, users: us, dws: ds, platforms: ps}
+	var agentVault *credential.Vault
+	if len(cfg.CredentialKey) > 0 {
+		agentVault, err = credential.New(cfg.CredentialKey)
+		if err != nil {
+			return nil, errors.New("invalid Agent credential key")
+		}
+	}
+	schedules := schedule.New(db.Schedules(), bridge.Demo{})
+	console, err := agentadmin.New(ctx, db.Agents(), db.AgentAdmin(), db.Users(), agentVault, cfg.AgentDemoEnabled, db.AgentData(), schedules)
+	if err != nil {
+		return nil, err
+	}
+	control := runcontrol.New(db.Control(), console.Service, db.AgentData())
+	app := &App{academic: academic.New(db.Academic()), control: control, config: cfg, db: db, users: us, dws: ds, platforms: ps, agents: console}
 	var descriptors []contract.Descriptor
 	if ps != nil {
 		descriptors = ps.Sources()
 	}
 	inspect := preview.New(db.Preview(), descriptors, int(cfg.DWSPollInterval/time.Second))
-	app.handler = routerWithPreview(us, ds, bridge.Demo{}, inspect, ps)
+	if ds != nil || ps != nil {
+		app.refresh = scheduler.New("information-refresh", "信息刷新 · 学习平台与 DWS", cfg.DWSPollInterval)
+		if cfg.RefreshPaused {
+			app.refresh.Update(false, int(cfg.DWSPollInterval/time.Second))
+		}
+	}
+	inspect.Intervals = func() (int, int) {
+		if app.refresh != nil {
+			seconds := app.refresh.Snapshot().IntervalSeconds
+			return seconds, seconds
+		}
+		return 600, int(cfg.DWSPollInterval / time.Second)
+	}
+	app.schedules = schedules
+	app.handler = routerWithAcademic(us, ds, app.schedules, inspect, console, app.refresh, app.schedules, control, app.academic, ps)
 	ok = true
 	return app, nil
 }
@@ -130,25 +173,68 @@ func (a *App) Run(ctx context.Context) error {
 	if err != nil {
 		return errors.New("HTTP server failed; check listen address")
 	}
-	server := &http.Server{Handler: a.handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 60 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
+	server := &http.Server{Handler: a.handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 0, IdleTimeout: 60 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var workers chan error
 	workerCount := 0
+	if a.control != nil {
+		workerCount++
+	}
 	if a.dws != nil {
 		workerCount++
 	}
 	if a.platforms != nil {
 		workerCount++
 	}
+	if a.refresh != nil {
+		workerCount++
+	}
 	if workerCount > 0 {
 		workers = make(chan error, workerCount)
+	}
+	if a.control != nil {
+		go func() { workers <- a.control.Run(runCtx) }()
 	}
 	if a.dws != nil {
 		go func() { workers <- a.dws.Run(runCtx) }()
 	}
 	if a.platforms != nil {
 		go func() { workers <- a.platforms.Run(runCtx) }()
+	}
+	if a.refresh != nil {
+		go func() {
+			workers <- a.refresh.Run(runCtx, func(ctx context.Context) bool {
+				failed := false
+				if a.control != nil {
+					round, err := a.control.StartRefresh(ctx)
+					if err != nil {
+						slog.Error("refresh round persistence failed")
+						return true
+					}
+					ctx = model.WithControlRound(ctx, round)
+					defer func() {
+						c, stop := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+						defer stop()
+						if err := a.control.Store.FinishRound(c, round, model.RefreshSnapshot(ctx), failed || ctx.Err() != nil); err != nil {
+							slog.Error("refresh round finalization failed")
+						}
+						_ = a.control.Store.Seal(c)
+					}()
+				}
+				for _, source := range []string{"chaoxing", "mooc", "ucampus"} {
+					model.InitRefreshSource(ctx, source, a.platforms != nil)
+				}
+				model.InitRefreshSource(ctx, "dws", a.dws != nil)
+				if a.platforms != nil {
+					failed = a.platforms.Poll(ctx) || failed
+				}
+				if a.dws != nil && ctx.Err() == nil {
+					failed = a.dws.Poll(ctx) || failed
+				}
+				return failed || ctx.Err() != nil
+			})
+		}()
 	}
 	errs := make(chan error, 1)
 	go func() { errs <- server.Serve(listener) }()
@@ -159,9 +245,9 @@ func (a *App) Run(ctx context.Context) error {
 	case e := <-workers:
 		workerCount--
 		if e != nil && !errors.Is(e, context.Canceled) {
-			runErr = errors.New("DWS worker stopped unexpectedly")
+			runErr = errors.New("background worker stopped unexpectedly")
 		} else if ctx.Err() == nil {
-			runErr = errors.New("DWS worker stopped unexpectedly")
+			runErr = errors.New("background worker stopped unexpectedly")
 		}
 	case e := <-errs:
 		if !errors.Is(e, http.ErrServerClosed) {
@@ -180,7 +266,7 @@ func (a *App) Run(ctx context.Context) error {
 		case e := <-workers:
 			workerCount--
 			if e != nil && !errors.Is(e, context.Canceled) {
-				runErr = errors.New("DWS worker stopped unexpectedly")
+				runErr = errors.New("background worker stopped unexpectedly")
 			}
 		case <-shutdownCtx.Done():
 			workerCount = 0

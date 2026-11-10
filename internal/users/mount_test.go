@@ -27,7 +27,7 @@ func TestNestedMountKeepsSiblingAuthentication(t *testing.T) {
 	for _, test := range []struct {
 		method, path string
 		code         int
-	}{{"GET", "/admin", 200}, {"GET", "/admin/", 200}, {"GET", "/api/v1/auth/me", 401}, {"GET", "/api/v1/dws/connections", 401}, {"POST", "/api/v1/bridge/demo", 401}, {"GET", "/api/v1/does-not-exist", 404}} {
+	}{{"GET", "/admin", 200}, {"GET", "/admin/", 200}, {"GET", "/admin/schedules.js", 200}, {"GET", "/api/v1/auth/me", 401}, {"GET", "/api/v1/dws/connections", 401}, {"POST", "/api/v1/bridge/demo", 401}, {"GET", "/api/v1/does-not-exist", 404}} {
 		t.Run(test.path, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			root.ServeHTTP(w, httptest.NewRequest(test.method, "https://example.test"+test.path, nil))

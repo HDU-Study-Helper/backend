@@ -9,12 +9,13 @@ import (
 )
 
 var (
-	ErrUnsupported  = errors.New("unsupported")
-	ErrAuthRequired = errors.New("auth_required")
-	ErrParse        = errors.New("parse_failed")
-	ErrRateLimited  = errors.New("rate_limited")
-	ErrUpstream     = errors.New("upstream_unavailable")
-	ErrInvalid      = errors.New("invalid_argument")
+	ErrUnsupported          = errors.New("unsupported")
+	ErrAuthRequired         = errors.New("auth_required")
+	ErrParse                = errors.New("parse_failed")
+	ErrRateLimited          = errors.New("rate_limited")
+	ErrVerificationRequired = errors.New("verification_required")
+	ErrUpstream             = errors.New("upstream_unavailable")
+	ErrInvalid              = errors.New("invalid_argument")
 )
 
 type Scope struct {
@@ -25,6 +26,9 @@ type Resource string
 
 const (
 	Course              Resource = "course"
+	Chapter             Resource = "chapter"
+	Lesson              Resource = "lesson"
+	Schedule            Resource = "schedule"
 	Assignment          Resource = "assignment"
 	Exam                Resource = "exam"
 	Progress            Resource = "progress"
@@ -35,11 +39,13 @@ const (
 )
 
 type Descriptor struct {
-	Source      string     `json:"source"`
-	Name        string     `json:"name"`
-	QRLogin     bool       `json:"qr_login"`
-	Resources   []Resource `json:"resources"`
-	Limitations []string   `json:"limitations"`
+	Source         string     `json:"source"`
+	Name           string     `json:"name"`
+	QRLogin        bool       `json:"qr_login"`
+	PasswordLogin  bool       `json:"password_login,omitempty"`
+	ManualSyncOnly bool       `json:"manual_sync_only,omitempty"`
+	Resources      []Resource `json:"resources"`
+	Limitations    []string   `json:"limitations"`
 }
 
 // Session is opaque sensitive adapter state. Only the credential layer persists it.

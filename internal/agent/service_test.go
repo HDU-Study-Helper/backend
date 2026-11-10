@@ -56,6 +56,22 @@ func errCode(t *testing.T, err error, want string) {
 		t.Fatalf("want %s, got %v", want, err)
 	}
 }
+func TestWorkerDispatchRequiresTrustedWorkflowBeforeModel(t *testing.T) {
+	a := testAgent("worker", "owner")
+	a.Type = "worker"
+	repo := &repoStub{agents: map[string]f.AgentInstance{a.ID: a}, runs: map[string]f.RunRecord{}}
+	called := false
+	service, err := New(Dependencies{Repository: repo, Providers: map[string]f.ModelProvider{"worker": fnModel(func(context.Context, f.ModelRequest) (f.ModelResponse, error) { called = true; return done(), nil })}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = (DispatchBridge{Port: service}).Dispatch(context.Background(), f.ExecutionContext{Scope: f.Scope{OwnerID: "owner", AgentID: "parent"}, Permissions: []string{"agent.dispatch"}}, f.RunRequest{AgentID: a.ID, Input: json.RawMessage(`{"workflow":{"workflow_id":"untrusted","version":1}}`)})
+	errCode(t, err, "INVALID_ARGUMENT")
+	if called || len(repo.runs) != 0 {
+		t.Fatal("unbound worker consumed a model run")
+	}
+}
+
 func TestBridgeDispatchAuthorizationAndTermination(t *testing.T) {
 	for _, tc := range []struct {
 		name                                                    string
@@ -130,4 +146,22 @@ func TestBridgeProtocolValidation(t *testing.T) {
 	}
 	_, err = (BackendBridge{}).Catalog(context.Background(), f.Scope{OwnerID: "u"})
 	errCode(t, err, "NOT_IMPLEMENTED")
+}
+
+func TestFailedBridgeRunPreservesRunID(t *testing.T) {
+	a := testAgent("a", "owner")
+	repo := &repoStub{agents: map[string]f.AgentInstance{"a": a}, runs: map[string]f.RunRecord{}}
+	service, err := New(Dependencies{Repository: repo, Providers: map[string]f.ModelProvider{"a": fnModel(func(context.Context, f.ModelRequest) (f.ModelResponse, error) {
+		return f.ModelResponse{}, f.Fail("TIMEOUT", "provider request timed out")
+	})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(f.RunRequest{AgentID: "a", Trigger: f.UserMessage, Input: json.RawMessage(`{}`)})
+	reply, err := service.Call(context.Background(), bridge.Request{Version: bridge.Version, OwnerID: "owner", Operation: RunOperation, Payload: raw})
+	errCode(t, err, "TIMEOUT")
+	var result f.RunResult
+	if json.Unmarshal(reply.Payload, &result) != nil || result.RunID == "" || result.Error == nil || repo.runs[result.RunID].Status != "failed" {
+		t.Fatalf("failed run lost: %+v", reply)
+	}
 }

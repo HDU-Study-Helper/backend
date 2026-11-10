@@ -12,6 +12,8 @@ import (
 
 // Config contains process configuration, never request-controlled paths or credentials.
 type Config struct {
+	RefreshPaused     bool
+	AgentDemoEnabled  bool
 	DatabaseURL       string
 	HTTPAddr          string
 	PublicOrigin      string
@@ -27,7 +29,21 @@ type Config struct {
 }
 
 func LoadConfig() (Config, error) {
-	c := Config{DatabaseURL: os.Getenv("DATABASE_URL"), HTTPAddr: os.Getenv("HTTP_ADDR"), PublicOrigin: os.Getenv("PUBLIC_ORIGIN"), BootstrapUsername: os.Getenv("BOOTSTRAP_ADMIN_USERNAME"), BootstrapPassword: os.Getenv("BOOTSTRAP_ADMIN_PASSWORD"), DWSBinary: os.Getenv("DWS_BINARY"), DWSBinarySHA256: os.Getenv("DWS_BINARY_SHA256"), DWSWorkspaceRoot: os.Getenv("DWS_WORKSPACE_ROOT"), DWSPollInterval: time.Minute, DWSCommandTimeout: 45 * time.Second}
+	c := Config{DatabaseURL: os.Getenv("DATABASE_URL"), HTTPAddr: os.Getenv("HTTP_ADDR"), PublicOrigin: os.Getenv("PUBLIC_ORIGIN"), BootstrapUsername: os.Getenv("BOOTSTRAP_ADMIN_USERNAME"), BootstrapPassword: os.Getenv("BOOTSTRAP_ADMIN_PASSWORD"), DWSBinary: os.Getenv("DWS_BINARY"), DWSBinarySHA256: os.Getenv("DWS_BINARY_SHA256"), DWSWorkspaceRoot: os.Getenv("DWS_WORKSPACE_ROOT"), DWSPollInterval: 10 * time.Minute, DWSCommandTimeout: 45 * time.Second}
+	if raw := os.Getenv("REFRESH_PAUSED"); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			return c, errors.New("invalid REFRESH_PAUSED")
+		}
+		c.RefreshPaused = v
+	}
+	if raw := os.Getenv("AGENT_DEMO_ENABLED"); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			return c, errors.New("invalid AGENT_DEMO_ENABLED")
+		}
+		c.AgentDemoEnabled = v
+	}
 	if c.DatabaseURL == "" {
 		return c, errors.New("DATABASE_URL is required")
 	}
@@ -72,7 +88,7 @@ func LoadConfig() (Config, error) {
 		name    string
 		value   *time.Duration
 		minimum time.Duration
-	}{{"DWS_POLL_INTERVAL", &c.DWSPollInterval, 5 * time.Second}, {"DWS_COMMAND_TIMEOUT", &c.DWSCommandTimeout, time.Second}} {
+	}{{"DWS_POLL_INTERVAL", &c.DWSPollInterval, 5 * time.Second}, {"REFRESH_INTERVAL", &c.DWSPollInterval, time.Minute}, {"DWS_COMMAND_TIMEOUT", &c.DWSCommandTimeout, time.Second}} {
 		if raw := os.Getenv(setting.name); raw != "" {
 			v, err := time.ParseDuration(raw)
 			if err != nil || v < setting.minimum || v > 24*time.Hour {

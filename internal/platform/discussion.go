@@ -20,7 +20,7 @@ func (s *Service) SyncDiscussionCourse(ctx context.Context, scope model.DWSScope
 	}
 	return s.syncPage(ctx, scope, contract.Discussion, course, class)
 }
-func (s *Service) syncDiscussionCourses(ctx context.Context, scope model.DWSScope) error {
+func (s *Service) discussionCourses(ctx context.Context, scope model.DWSScope) ([]contract.CoursePartition, error) {
 	var courses []contract.CoursePartition
 	e := s.operate(ctx, scope, "", func(ctx context.Context, l model.PlatformLease, state model.PlatformState, a contract.Adapter) error {
 		partitioned, ok := a.(contract.DiscussionPartitioner)
@@ -30,6 +30,10 @@ func (s *Service) syncDiscussionCourses(ctx context.Context, scope model.DWSScop
 		if state.Connection.State != "active" {
 			return contract.ErrAuthRequired
 		}
+		ctx, e := s.collectionContext(ctx, scope)
+		if e != nil {
+			return e
+		}
 		raw, e := s.vault.Open(scope.UserID, scope.ConnectionID, state.Session)
 		if e != nil {
 			return e
@@ -38,6 +42,10 @@ func (s *Service) syncDiscussionCourses(ctx context.Context, scope model.DWSScop
 		courses, e = partitioned.DiscussionCourses(ctx, adapterScope(scope), raw)
 		return e
 	})
+	return courses, e
+}
+func (s *Service) syncDiscussionCourses(ctx context.Context, scope model.DWSScope) error {
+	courses, e := s.discussionCourses(ctx, scope)
 	if e != nil {
 		return e
 	}
@@ -48,7 +56,7 @@ func (s *Service) syncDiscussionCourses(ctx context.Context, scope model.DWSScop
 		}
 		if e := s.SyncDiscussionCourse(ctx, scope, course.CourseID, course.ClassID); e != nil {
 			failures = append(failures, e)
-			if errors.Is(e, contract.ErrAuthRequired) {
+			if errors.Is(e, contract.ErrAuthRequired) || errors.Is(e, contract.ErrVerificationRequired) || errors.Is(e, contract.ErrRateLimited) {
 				break
 			}
 		}

@@ -48,12 +48,13 @@ func New(deps contract.Dependencies) (contract.Adapter, error) {
 		}
 		return nil
 	}
+	c.Transport = newPacedTransport(c.Transport, 700*time.Millisecond)
 	return &adapter{client: c}, nil
 }
 func (*adapter) Describe() contract.Descriptor {
 	return contract.Descriptor{Source: "chaoxing", Name: "学习通", QRLogin: true,
-		Resources:   []contract.Resource{contract.Course, contract.Assignment, contract.Exam, contract.Progress, contract.Notice, discussionResource, contract.Material},
-		Limitations: []string{"Discussion probe read 11 posts from one authorized course; other courses and live continuation remain unverified", "Full rescan; discussion reads one course page per call with explicit poff pagination; assignments require total-count evidence", "Progress is task-point aggregate only; exam is account-level schedule only", "Materials are directory metadata only; no file content or download requests; live traversal remains unverified", "No answers, submissions, progress writes, attachment downloads, or two-factor login"}}
+		Resources:   []contract.Resource{contract.Course, contract.Chapter, contract.Lesson, contract.Assignment, contract.Exam, contract.Progress, contract.Notice, discussionResource, contract.Material},
+		Limitations: []string{"Discussion probe read 11 posts from one authorized course; other courses and live continuation remain unverified", "Full rescan; discussion reads one course page per call with explicit poff pagination; assignments require total-count evidence and read at most five safe headers per call", "Teaching nodes retain native IDs and explicit personal task-point evidence; title-only groups are path context; exam is account-level schedule only", "Materials are directory metadata only; no file content or download requests; live traversal remains unverified", "No answers, submissions, progress writes, attachment downloads, or two-factor login"}}
 }
 
 type cookieEntry struct {
@@ -141,6 +142,11 @@ func (a *adapter) restore(scope contract.Scope, session contract.Session) (*stat
 	b, _ := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 	j := &jar{base: b}
 	for _, e := range s.Cookies {
+		// k8s is a transient routing ticket. Replaying an old persisted value
+		// triggers the official anti-spider page even with valid login cookies.
+		if e.Cookie.Name == "k8s" {
+			continue
+		}
 		u, err := url.Parse(e.Origin)
 		if err != nil || !official(u) {
 			return nil, nil, nil, contract.ErrAuthRequired
@@ -158,7 +164,12 @@ func (a *adapter) restore(scope contract.Scope, session contract.Session) (*stat
 	return s, &c, j, nil
 }
 func save(s *state, j *jar) contract.Session {
-	s.Cookies = j.Entries
+	s.Cookies = make([]cookieEntry, 0, len(j.Entries))
+	for _, entry := range j.Entries {
+		if entry.Cookie.Name != "k8s" {
+			s.Cookies = append(s.Cookies, entry)
+		}
+	}
 	b, _ := json.Marshal(s)
 	return b
 }
@@ -202,6 +213,9 @@ func request(ctx context.Context, c *http.Client, method, target string, form ur
 		return nil, contract.ErrUpstream
 	}
 	defer resp.Body.Close()
+	if resp.Request != nil && resp.Request.URL != nil && strings.Contains(resp.Request.URL.Path, "antispiderShowVerify") {
+		return nil, contract.ErrVerificationRequired
+	}
 	if resp.StatusCode == 429 {
 		return nil, contract.ErrRateLimited
 	}
@@ -220,6 +234,9 @@ func request(ctx context.Context, c *http.Client, method, target string, form ur
 	}
 	if len(b) > maxBody {
 		return nil, contract.ErrParse
+	}
+	if verificationPage(b) {
+		return nil, contract.ErrVerificationRequired
 	}
 	return b, nil
 }

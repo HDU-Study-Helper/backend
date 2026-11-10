@@ -45,6 +45,28 @@ type cursor struct {
 	MaterialFolders        []materialFolder
 	MaterialIDs            []string
 	MaterialTotalPages     int
+	AssignmentLandings     []assignmentLanding
+	AssignmentCourseDone   bool
+	TeachingRecords        []contract.Record
+}
+
+// advanceCourse discards every course-local pagination value while retaining the
+// original snapshot: Index, not a filtered Courses slice, identifies the next course.
+func (v *cursor) advanceCourse() {
+	v.Index++
+	v.Page, v.Seen, v.ExpectedTotal = 1, 0, 0
+	v.Last, v.Fingerprint = "", ""
+	v.WorkIDs = nil
+	v.DiscussionLastValue, v.DiscussionLastAuxValue = "", ""
+	v.MaterialFolders, v.MaterialIDs, v.MaterialTotalPages = nil, nil, 0
+	v.AssignmentLandings, v.AssignmentCourseDone, v.TeachingRecords = nil, false, nil
+}
+
+func (v *cursor) skipExcludedCourses(ctx context.Context) {
+	// decode/fetchCourses cap the snapshot at 500; this loop performs no I/O.
+	for v.Index < len(v.Courses) && contract.CourseExcluded(ctx, v.Scope, v.Courses[v.Index].key()) {
+		v.advanceCourse()
+	}
 }
 
 func encode(v cursor) string { b, _ := json.Marshal(v); return base64.RawURLEncoding.EncodeToString(b) }
@@ -67,7 +89,7 @@ func (a *adapter) Sync(ctx context.Context, scope contract.Scope, session contra
 		return contract.Page{}, err
 	}
 	switch r {
-	case contract.Course, contract.Assignment, contract.Exam, contract.Progress, contract.Notice, discussionResource, contract.Material:
+	case contract.Course, contract.Chapter, contract.Lesson, contract.Assignment, contract.Exam, contract.Progress, contract.Notice, discussionResource, contract.Material:
 	default:
 		return contract.Page{}, contract.ErrUnsupported
 	}
@@ -91,31 +113,62 @@ func (a *adapter) Sync(ctx context.Context, scope contract.Scope, session contra
 				return contract.Page{}, e
 			}
 		}
+		v.skipExcludedCourses(ctx)
 		if v.Index < len(v.Courses) {
 			out.Records, e = syncMaterials(ctx, c, &v)
 			if e != nil {
 				return contract.Page{}, e
 			}
 		}
+		v.skipExcludedCourses(ctx)
 		out.HasMore = v.Index < len(v.Courses)
-	case contract.Course, contract.Assignment, contract.Progress:
+	case contract.Chapter, contract.Lesson, contract.Progress:
+		if raw == "" {
+			v.Courses, e = fetchCourses(ctx, c)
+			if e != nil {
+				return contract.Page{}, e
+			}
+		}
+		v.skipExcludedCourses(ctx)
+		if v.Index < len(v.Courses) {
+			out.Records, e = syncTeaching(ctx, c, &v)
+			if e != nil {
+				return contract.Page{}, e
+			}
+		}
+		v.skipExcludedCourses(ctx)
+		out.HasMore = v.Index < len(v.Courses)
+	case contract.Course, contract.Assignment:
 		if raw == "" {
 			v.Courses, e = fetchCourses(ctx, c)
 			if e != nil {
 				return out, e
 			}
 		}
+		v.skipExcludedCourses(ctx)
 		if r == contract.Course {
 			end := v.Index + 50
 			if end > len(v.Courses) {
 				end = len(v.Courses)
 			}
 			for _, co := range v.Courses[v.Index:end] {
-				out.Records = append(out.Records, record(r, co.key(), "", co.Name, "", map[string]any{"course_id": co.ID, "class_id": co.Class, "teacher": co.Teacher}))
+				if contract.CourseExcluded(ctx, scope, co.key()) {
+					continue
+				}
+				out.Records = append(out.Records, record(r, co.key(), "", co.Name, "", map[string]any{"course_id": co.ID, "class_id": co.Class, "course_name": co.Name, "teacher": co.Teacher, "coverage": "course_list"}))
 			}
 			v.Index = end
 		} else if v.Index < len(v.Courses) {
 			co := v.Courses[v.Index]
+			if r == contract.Assignment && len(v.AssignmentLandings) > 0 {
+				out.Records, e = syncAssignmentHeaders(ctx, c, &v)
+				if e != nil {
+					return contract.Page{}, e
+				}
+				v.skipExcludedCourses(ctx)
+				out.HasMore = v.Index < len(v.Courses)
+				break
+			}
 			if co.ID == "" || co.Class == "" || co.CPI == "" {
 				return out, contract.ErrParse
 			}
@@ -167,47 +220,23 @@ func (a *adapter) Sync(ctx context.Context, scope contract.Scope, session contra
 				if v.Seen > total {
 					return out, contract.ErrParse
 				}
-				out.Records = rr
+				v.AssignmentLandings = assignmentLandings(b, rr, co)
+				v.AssignmentCourseDone = v.Seen == total
 				if v.Seen < total {
 					v.Page++
 					v.Fingerprint = fingerprint
+				}
+				if len(v.AssignmentLandings) == 0 {
+					v.advanceCourse()
 				} else {
-					v.Index++
-					v.Page = 1
-					v.Seen = 0
-					v.Fingerprint = ""
-					v.WorkIDs = nil
-					v.ExpectedTotal = 0
+					out.Records, err = syncAssignmentHeaders(ctx, c, &v)
+					if err != nil {
+						return contract.Page{}, err
+					}
 				}
-			} else {
-				if inputs["enc"] == "" {
-					return out, contract.ErrParse
-				}
-				q := url.Values{"courseid": {co.ID}, "clazzid": {co.Class}, "cpi": {co.CPI}, "enc": {inputs["enc"]}, "openc": {inputs["openc"]}, "fromMiddle": {"1"}, "ut": {"s"}, "t": {strconv.FormatInt(time.Now().UnixMilli(), 10)}}
-				b, err = request(ctx, c, http.MethodGet, "https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse?"+q.Encode(), nil)
-				if err != nil {
-					return out, err
-				}
-				if err = checked(b); err != nil {
-					return out, err
-				}
-				d, err := document(b)
-				if err != nil {
-					return out, err
-				}
-				m := progressRatio.FindStringSubmatch(text(d))
-				if len(m) != 3 {
-					return out, contract.ErrParse
-				}
-				done, _ := strconv.Atoi(m[1])
-				total, _ := strconv.Atoi(m[2])
-				if done > total {
-					return out, contract.ErrParse
-				}
-				out.Records = append(out.Records, record(r, "task-points", co.key(), co.Name, "", map[string]any{"course_id": co.ID, "class_id": co.Class, "completed": done, "total": total, "metric": "task_points"}))
-				v.Index++
 			}
 		}
+		v.skipExcludedCourses(ctx)
 		out.HasMore = v.Index < len(v.Courses)
 	case discussionResource:
 		if raw == "" {
@@ -216,12 +245,14 @@ func (a *adapter) Sync(ctx context.Context, scope contract.Scope, session contra
 				return out, e
 			}
 		}
+		v.skipExcludedCourses(ctx)
 		if v.Index < len(v.Courses) {
 			out.Records, e = syncDiscussion(ctx, c, &v)
 			if e != nil {
 				return contract.Page{}, e
 			}
 		}
+		v.skipExcludedCourses(ctx)
 		out.HasMore = v.Index < len(v.Courses)
 	case contract.Notice:
 		out.Records, v.Last, out.HasMore, e = notices(ctx, c, v.Last)
@@ -240,6 +271,9 @@ func (a *adapter) Sync(ctx context.Context, scope contract.Scope, session contra
 	}
 	if out.HasMore {
 		out.NextCursor = encode(v)
+		if len(out.NextCursor) > 1<<20 {
+			return contract.Page{}, contract.ErrParse
+		}
 	}
 	out.Session = save(s, j)
 	return out, nil
@@ -414,8 +448,10 @@ func assignments(b []byte, co course) ([]contract.Record, int, error) {
 			bad = true
 			return
 		}
-		f := map[string]any{"course_id": co.ID, "class_id": co.Class, "status": strings.TrimSpace(label[1])}
-		out = append(out, record(contract.Assignment, id, co.key(), strings.TrimSpace(label[0]), "", f))
+		f := courseFields(co)
+		f["status"] = strings.TrimSpace(label[1])
+		content := assignmentMetadata(n, f)
+		out = append(out, record(contract.Assignment, id, co.key(), strings.TrimSpace(label[0]), content, f))
 	})
 	if bad {
 		return nil, 0, contract.ErrParse
@@ -454,11 +490,25 @@ func notices(ctx context.Context, c *http.Client, last string) ([]contract.Recor
 			LastPage  json.RawMessage
 		}
 	}
-	if json.Unmarshal(b, &v) != nil || v.Status == nil || v.Notices == nil || v.Notices.List == nil {
+	if json.Unmarshal(b, &v) != nil || v.Status == nil {
 		return nil, "", false, contract.ErrParse
 	}
 	if !*v.Status {
 		return nil, "", false, contract.ErrAuthRequired
+	}
+
+	if v.Notices == nil {
+		// The official continuation endpoint returns exactly {"status":true}
+		// after its final data page, whose lastPage may still be 0. Only accept
+		// this observed terminal envelope after a real continuation cursor.
+		var envelope map[string]json.RawMessage
+		if last != "" && json.Unmarshal(b, &envelope) == nil && len(envelope) == 1 {
+			return []contract.Record{}, "", false, nil
+		}
+		return nil, "", false, contract.ErrParse
+	}
+	if v.Notices.List == nil {
+		return nil, "", false, contract.ErrParse
 	}
 	n := v.Notices
 	end := string(n.LastPage) == "true" || string(n.LastPage) == "1"
@@ -493,10 +543,21 @@ func notices(ctx context.Context, c *http.Client, last string) ([]contract.Recor
 			content = text(d)
 		}
 		f := map[string]any{}
-		for _, k := range []string{"sendTime", "insertTime", "isread", "sourceType"} {
+		for _, k := range []string{"sendTime", "insertTime", "updateTime", "isread", "sourceType", "senderName", "sendName", "createrName", "creatorName"} {
 			if v := scalar(it[k]); v != "" {
 				f[k] = v
 			}
+		}
+		f["coverage"], f["body_status"] = "account_notice_list", "source_text"
+		aliasAuthor(f, "senderName", "sendName", "createrName", "creatorName")
+		aliasTime(f, "published_at", "sendTime")
+		aliasTime(f, "updated_at", "updateTime")
+		if _, ok := f["sendTime"]; ok {
+			f["published_at_semantics"] = "notice_send_time"
+		}
+		// insertTime is storage insertion evidence, not an inferred update or send.
+		if raw := scalarText(f["insertTime"]); raw != "" {
+			timeEvidence(f, "inserted_at", raw, "insertTime")
 		}
 		out = append(out, record(contract.Notice, id, "", title, content, f))
 	}
@@ -552,6 +613,10 @@ func exams(b []byte) ([]contract.Record, error) {
 			identity = "schedule_text_hash"
 		}
 		f := map[string]any{"time_raw": cols[2], "duration_raw": cols[3], "availability_status": cols[4], "submission_status": cols[5], "score_raw": cols[6], "terminal_raw": cols[7], "identity_source": identity}
+		f["coverage"], f["body_status"], f["body_reason"] = "account_exam_schedule", "not_collected", "exam_not_opened"
+		f["time_source"], f["time_semantics"] = "exam_schedule:time_column", "exam_availability_range"
+		f["time_precision"], f["time_reason"] = "raw_range", "range_requires_central_normalization"
+		missingTime(f, "published_at", "not_provided_by_source")
 		out = append(out, record(contract.Exam, id, "account-exam-schedule", cols[1], "", f))
 	})
 	if bad || len(out) > 500 || (!table && !strings.Contains(text(d), "暂无考试")) {

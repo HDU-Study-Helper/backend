@@ -1,64 +1,71 @@
 # 中国大学 MOOC / SPOC 只读适配器
 
-仅实现 `internal/mooc/**`。入口 `New(contract.Dependencies) (contract.Adapter, error)`，实现当前 `internal/contract/platform.go` 的 Describe / BeginAuth / PollAuth / Sync。无 SQL、HTTP route、后台循环、其他平台依赖或新增外部依赖。父层负责凭据加密、Scope 可信构造、Worker、入库、内容哈希幂等和 API。
+范围为 `internal/mooc/**`，可选诊断入口 `cmd/mooc-inspect/**`。`New(contract.Dependencies)` 返回 contract.Adapter；没有 SQL、HTTP route、后台循环或模型调用。父层负责加密凭据、可信 Scope、调度、入库及内容哈希幂等。已有认证、重试、空子集合兼容与会话隔离逻辑保留。
 
-## 实现和验证状态
+## 当前能力和证据
 
-| 能力 | 本模块实现 | 验证边界 |
+|资源|行为|覆盖边界|
 |---|---|---|
-| 官方扫码二维码获取与轮询 | GET code.do，真实官方 image URL；0/4 pending、1 scanned、2 token 换 Cookie、3 expired | Mock 通过；本轮只匿名探测 code.do 响应形状，不扫码、不读取已有真实会话。已有研究浏览器真实登录成功证据，不能等同本 Go 链路已真实验收 |
-| MOOC/SPOC 已选课 | courseType=1/2，form type=30/p/psize=8，result.result/list 与 pagination/query | Mock 两页、同课程不同 term 通过；研究曾验证两个范围首页，本模块多页尚未真实验收 |
-| assignment | 逐期 getLastLearnedMocTermDto 的 quizs/quizzes/homeworks 和明确任务单元；保留源截止、提交、互评字段 | Mock 通过；研究仅有限普通 MOOC quiz 目录和空 SPOC 目录证据，非完整账号作业验收 |
-| exam | 相同安全目录内 exams 或明确 contentType=6 单元的任务元数据 | Mock 通过；真实考试目录覆盖未验证，不取试卷、题目或答案，不开卷 |
-| progress | lastLearnUnitId、目录任务/单元显式个人状态、个人分数、尝试数等原值 | Mock 通过；仅观测字段，lastLearnUnitId 表示最后访问而非已完成。没有推导完成率、提交成功或“已完成” |
-| notice | `ErrUnsupported`，Describe 不声明 | 尚无核实端点；不以本地提醒替代平台公告 |
+|course|MOOC/SPOC分页、逐期目录元数据、官方学习页教师展示名、经courseDto.id验证的官方课程信息区全文、SPOC源期次发现|当前会话验证MOOC课程介绍2620字节及教师展示名；SPOC介绍用明确源courseId和已发现学校路由，缺失映射时unsupported；不是全部公开/历史课程|
+|chapter / lesson|完整可见目录章、节，标题、顺序、原生ID和路径|只沿明确目录字段，不猜未知结构|
+|material|视频、文档、图文及未知单元目录元数据；type4读取图文正文，type3读取PDF页数/比例元数据|仅verified getLessonUnitLearnVo的3/4，不下载PDF或媒体，不暴露签名URL；其他类型正文unsupported|
+|discussion|普通unit.contentType6根帖、PostBean.getPostDetailById当前用户关注/投票状态及getPaginationReplys分页回复|真实验证首帖15条回复/总309条/21页；每帖最多20页或300条及512KiB累计原文；不取嵌套评论或参与者资料，不冒充考试|
+|assignment|quizs/quizzes/homeworks 集合和有明确任务证据的单元，任务描述若已随目录提供则提取可读文本|不打开试卷、不读题目/答案、不提交|
+|exam|exams / 单一 exam 对象，或 unit.test.type=6|实际 exams.contentType=4 已验证；不能拿 plain unit.contentType6 推断考试|
+|progress|lastLearnUnitId、原生term totalLearnedTime、章/节/单元及任务的显式个人字段（含零值）、原始completePercent/learnTime/viewStatus|章无字段明确not_provided；节viewStatus真实可见，含义不猜；最后访问不等于完成，不合成章/节/课程完成率|
+|notice|官方DWR CourseBean.getAllAnnouncementByTerm(termId,1)，标题/正文/源发布时间及修改时间|已验证源期次返回1条公告；MOOC/SPOC路由与源期次独立读取；不含教师论坛/global通知|
 
-本模块未进行真实账号登录或采集，没有读取 `research/mooc/live/private/**`、真实 Cookie 或原始私密日志。协议依据 `research/mooc/REPORT.md`、`live/TEST_REPORT.md`、`live/LOGIN_STATUS.md`、已审查的 MIT Keqi/MOOC_reminder 协议字段与当前官方公开 core JS；实现独立编写，未复制 UNLICENSED MCP 实现。
+真实只读诊断使用 dbbridge 公共端口及 credential 解密已有会话，仅在内存恢复会话，不重新授权、不提交记录/游标/会话。诊断仅输出白名单元数据/形状，绝不输出 Cookie、签名URL、题目或答案。没有运行第三方混合读写代码，没有访问 research/mooc/live/private 会话。历史研究见 `research/mooc/REPORT.md`、`live/TEST_REPORT.md`；当前字段证据来自官方目录、官方学习页脚本数据和官方公开 JS。实现独立编写。本轮官方来源：[学习内容模块](https://mc.stu.126.net/pub/s/tp_learn_index_desktop_modules_learn_content_77de50b84f45c2d14d1999790ee28ebd.js)、[讨论模块](https://mc.stu.126.net/pub/s/tp_learn_index_desktop_modules_learn_forum_e1700063cdadd9e39b7413f0100c6b34.js)、[任务概览模块](https://mc.stu.126.net/pub/s/tp_learn_index_desktop_modules_learn_eb4621a644ff77602df69a4bb13e5c55.js)。只读RPC签名在这些代码中确认，真实响应再次验证；PostBean.incrPostBrowse/clearUnreadCount独立写调用不执行。
 
-## 认证与会话
+本轮验证：普通MOOC三门目录分别 6章27节101单元、5章25节81单元、4章4节52单元。SPOC route 1488617444 目录为空，但官方 `window.moocTermDto.id=1488350464`，读取该源期次得到6章27节101单元；route1488617443对应源1488348465，保留路由自身2章4单元及源4章52单元。第三SPOC route1487718452有11章47节75单元，无独立moocTermDto。只代表当前可见目录，不包含未发布或不可访问内容。
 
-BeginAuth 返回真实官方 `QRURL`（`https://mooc-image.nosdn.127.net/...`）。公开 code.do 当前返回该域的 HTTP 图片链接，适配器限定精确域名后升级 HTTPS，不生成占位图、不返回 token API URL。code.do 参数 width=182/height=182；poll.do 参数 pollKey。官方公开前端枚举确认 0 未扫码、1 扫码未确认、2 已确认、3 失效、4 其他 App 扫码。2 只在官方 `mocMobChangeCookie.htm` 换得 STUDY_INFO 与 NTESSTUDYSI 后返回 authorized；scanned 不等于 authorized。返回 PollAfter=2s，父调度器执行轮询。上游未提供过期时间，ExpiresAt 使用本地保守 2 分钟有效窗口；上游 codeStatus=3 可提前失效。网络/结构错误明确返回，不伪装 expired。
+## 分类和字段
 
-Session 是敏感 opaque `[]byte`，包含私有 Cookie jar、待授权 pollKey、Scope、状态；只允许父凭据层加密持久化。AuthResult 的 Session 不参与 JSON 序列化，父 HTTP 层只对白名单 QR/状态字段响应。每次调用复制注入 HTTPClient，保留 Transport，不使用注入 Client 的 Jar，不修改原 Client/全局状态。每次从当前 Session 恢复独立 jar；Page.Session 总是回传 Cookie 刷新，父层应与对应 checkpoint 一起持久化，禁止日志或普通 metadata。
+任务与普通单元使用不同枚举，必须结合 source_collection：
 
-仅允许 HTTPS 官方 www.icourse163.org 认证重定向，最多 6 次；跨域重定向明确失败。真实成功流程若出现其他官方域重定向，需要独立验证后增加精确白名单，当前不会放宽到任意网易域。会话、游标均校验非空 user+connection。Session 是内部可信加密状态，不是可供客户端构造或导入的 Cookie API。
+- quizs/quizzes → assignment(task_type=quiz)，homeworks → assignment(homework)，exams/exam → exam。
+- unit.test.type=2/3/6 分别为 quiz/homework/exam；`test`仅是本节点元数据，不递归为第二个任务。
+- 官方普通unit枚举1视频、2视频字幕、3PDF、4图文、5QUESTION、6讨论、7直播、15交互课件。无test的2为material(video_subtitles)，有test及任务证据才为quiz。5输出material、unit_type=assessment_unknown、classification_status=unsupported_assessment_subtype；不读取题目、不猜考试。
+- 未识别普通单元仍输出material、unit_type=unknown，保留原contentType及明确未知状态，不静默丢掉。
 
-## Sync 调度、游标与原生 ID
+所有子记录 ParentID 保持原路由course.ExternalID，层次在 Fields：courseId/termId/routeCourseId/routeTermId、sourceTermId、activeTermId、source_scope(route或active_source)、sourceCourseId、course_name、chapterId/lessonId/unitId/contentId/nodeId、path/path_titles。catalog_node_type=unit/chapter/lesson/任务类型，source_collection及assessment_evidence记录分类依据。不同源期次相同ID不会碰撞。同名MOOC与SPOC绝不按课程名或courseId合并。
 
-所有资源首次 cursor 为空。每次 Sync 最多执行一次上游 RPC：
+Fields保留白名单源标量：releaseTime/gmtCreate/gmtModified/position、totalScore/bonusScore/testTime/trytime/tryTime、截止/互评/成绩发布时间、原生提交状态、分数、可见性、时长、completePercent等。嵌套 test_metadata 单独保留白名单以避免不同层同名字段丢失。时间保留源数值/字符串、原有单位及哨兵值，不造时区。任务新增assessment_time_fields={node:{…},test:{…}}逐层保留时间，assessment_time_semantics/assessment_time_coverage说明含义与缺口。releaseTime是发布/开放信息，不能自动当考试开始；deadline是提交截止，evaluateStart/evaluateEnd是互评窗口，evaluateScoreReleaseTime/scoreReleaseTime是成绩发布。原startTime/endTime仅原样保留，无值不拿其他字段补；官方UI有fallback不代表源语义相同。新增userSubmitStatus/userEffectStatus等白名单，仅源实际提供才输出，不从互评阶段或分数推提交完成。SourceVersion仍留空；gmtModified是普通源字段，不能证明整个DTO版本。
 
-1. 发现一页 MOOC 课程。course 直接输出；其他资源将最多 8 个期次封入 cursor，该次允许 Records=[]、HasMore=true。
-2. assignment/exam/progress 每次读取一个期次目录，成功后推进到下一期次；这一页任一解析失败会整页报错，不推进。
-3. 继续课程下一页，再切换 SPOC courseType=2；全部完成时 HasMore=false、NextCursor 为空。下一次周期从头全量扫描。
+Content来自安全目录description、公告content、type4.htmlContent、type6.post.content。HTML转可读文本并丢弃链接及脚本；不复制原始DTO。type3为body_status=metadata_only，保留textPages/textPageWhRatio；其他未核实正文显式unsupported。每条记录coverage=partial及原因；课程含notice/material_body/discussion_body/assessment_body覆盖声明、catalog_status和源期次发现状态。讨论根帖discussion_record_type=root_post，回复=reply，root_discussion_id连接原根帖记录，ParentID仍为路由课程；postId/replyId为原生字符串，正文去HTML/链接。current_user_state仅hasFollowed/hasVoteUp/hasVoteDown原生布尔。官方页面webUser.id仅留敏感cursor内存用于与posterId/replyerId比较，业务字段仅输出is_current_user；身份未知则缺省该布尔，current_user_identity_coverage=unknown，绝不复制poster/replyer的姓名、学号或身份ID。current_user_participation_fields保留目录replyCount/voteCount等原生状态，未扫描到本人回复不构成未参与。reply_coverage/reply_truncated/reply_pages_read/reply_count_observed/reply_total_count/reply_total_pages/reply_snapshot_changed区分页读完、预算截断和源变化，comment_coverage明确嵌套评论unsupported。根帖在回复读取结束后输出覆盖结果。公告保留noticeId/publishTime/gmtCreate/gmtModified/status/type/weight。
 
-父 Worker 必须继续合法空页。没有原生增量 API、删除证据或持久增量水位；由父层内容哈希幂等保存源观察，未出现不能视为删除。分页使用 totlePageCount/totalPageCount，缺失时按 8 条推断是否还有一页，少于 8 条终止；每范围最多 100 页，越界/重复相邻课程页明确 ErrParse，不静默截断。每目录最多 4 MiB 响应、深度24、10000个节点、2000条输出，超过预算失败。
+进度新增native_progress_fields、progress_status(source_fields_observed/not_provided)、progress_coverage、progress_value_semantics。章/节/单元保留自身字段，不用子节点平均值替代上游进度；原始viewStatus不解释成完成状态，completePercent不自动乘100，learnTime不猜单位。新增term_progress只承载源term显式字段；lastLearnUnitId记录仍仅最后访问。
 
-cursor 是 base64url JSON，含 version/source=mooc/resource/user+connection、courseType、页号、当前最多8期次、期次索引与前页摘要；严格验证资源与 Scope。它是敏感内部 checkpoint，父 API 不应接受客户端上游 cursor。不同资源各自扫描，无共享内存课程缓存；父层可按速率和预算调度。
+## 调度和游标
 
-ID 采用无 padding 的 base64url(JSON字符串数组)，可逆且没有分隔符歧义：
+每次Sync最多一次逻辑上游读取（目录瞬时网络故障最多两次重试）：讨论在目录/正文后分别读取详情、每次一页回复；固定时间升序，校验pageNo/postId/重复replyId，页码不符、空页仍有后续或未知形状明确失败。每帖20页/300回复/512KiB累计原文，超过预算保留已有记录并标截断；页总数变化显式标snapshot_changed。回复正文不放入cursor，只保留去重ID及累计预算；单响应仍受4MiB及DWR累计结构预算约束。发现一页课程、GET一个SPOC官方页面、读取一个期次目录/公告列表、或读取一个安全单元正文。材料/讨论目录把需要正文的记录放入有界敏感cursor队列，每次只读取一个，全部处理后继续下一期次。所有资源单页最多500条，多余目录/公告记录同样进入cursor队列，后续每次输出最多500条且不重复请求源。课程流也逐期读取以保留真实课程元数据；额外步骤读取官方学习页的learn-teacher-names与/course/信息区，原生courseDto.id必须匹配。MOOC列表形成有界sourceCourseId→school索引；SPOC源课介绍仅用该明确映射，不用本地SPOC学校猜源课路由。description_coverage/teacher_coverage/description_source_course_id保留覆盖与出处，目录已给描述不会被缺省页面覆盖。SPOC先验证官方页面的courseDto/termDto归属，再从activeTermId或moocTermDto.id发现源期次；不执行JavaScript。路由与源目录独立读取，Referer始终保留原路由。缺少明确源映射时标unsupported，未知字段/矛盾映射明确失败。
 
-- course.ExternalID = `[courseId, termId]`，同课程不同 term 永不合并。
-- task/progress.ParentID = 同一期次的 course.ExternalID。
-- task/progress.ExternalID = `[courseId, termId, unitId, contentId, nodeId]`。
-- 最后访问单元记录 ExternalID = `[courseId, termId, "lastLearnUnitId"]`。
+空记录且HasMore=true合法，父层必须继续。游标base64url JSON绑定version/source/resource/Scope，最多8课程，课程分页每范围最多100页，页号/相邻页重复/未知目录形状明确失败。每响应4MiB，目录深度24、10000节点、2000输出；课程名512字符、游标1MiB、待正文队列2000条，SPOC脚本数据对象256KiB预算。根chapters必须数组，子集合null表示源缺省；空目录不代表完整覆盖。
 
-Fields 同时保留各项原生字符串 ID、courseType，缺失 unitId/contentId 保留空值，绝不拿 aid 替代；unitId 继承最近目录 unit 或显式 unitId，contentId 优先直接值，再取嵌套 test 内容 ID。源 course term 与 DTO 明确 id/termId 不同会报解析错误；尚不实现 SPOC source activeTermId 自动映射，避免混淆源期次和路由期次。
+父层通过`contract.WithExcludedCourses`传入当前连接的课程黑名单；匹配原生course.ExternalID，即routeCourseId/routeTermId的base64url键。每页在当前课程发现、介绍、目录、公告请求及待正文/溢出记录输出前重新检查，路由与active源期次均按原路由归属跳过。共享课程发现页仍读取，SourceSchools可来自该页；保存的课程数组和索引不因过滤重新排列。跳过只推进一个游标槽或清空待输出队列，不在调用内循环请求下一门课程；移除黑名单后下次完整扫描可重新读取，适配器不删除已有记录。离线注入Transport测试覆盖中途新增、待正文、active源、同名不同期次、Scope隔离及移除恢复；未为此执行真实上游请求。
 
-只沿已核实 chapters/lessons/units/quizs/quizzes/homeworks/exams 目录字段遍历。`test` 只读取白名单元数据，不将它作为第二个任务重复生成。旧文档 contentType=3 可能表示文档，因此普通 unit 的 3 只有携带 test 元数据才作为 homework。不按标题关键词猜考试。不以分数、互评阶段或 usedTryCount 推断完成状态。提交截止和 evaluateEnd 分别保留，互不覆盖。返回源时间原始数值/字符串，不捏造时区或未知日期。未观察到可靠原生版本字段，SourceVersion 留空。
+ID无padding base64url(JSON字符串数组)：
 
-成功 code 但 result 缺失/null、目录没有明确 chapters 数组、错误期次、畸形页、非 JSON 都报 ErrParse；明确 chapters=[] 可返回空的有限目录观察，特别是 SPOC 不代表源课程没有作业。
+- course.ExternalID=`[routeCourseId,routeTermId]`。
+- 子记录ExternalID=`[routeCourseId,routeTermId,sourceTermId,unitId,contentId,nodeId]`。
+- lastLearn记录ExternalID=`[routeCourseId,routeTermId,sourceTermId,"lastLearnUnitId"]`。
+- notice.ExternalID=`[routeCourseId,routeTermId,sourceTermId,"notice",noticeId]`。
+- discussion回复ExternalID=`[routeCourseId,routeTermId,sourceTermId,"discussion",postId,"reply",replyId]`，不与根帖合并。
+- term进度ExternalID=`[routeCourseId,routeTermId,sourceTermId,"term_progress"]`。
 
-## 安全限制与验收
+增加sourceTermId改变了旧任务/progress键；父层须处理旧错误exam记录、旧任务重复及历史归类迁移，不能将旧exam计数继续作为真实考试数。没有删除或增量证据，未出现不等于删除。
 
-每请求检查 context、20s 超时、4MiB 体积上限；401/403/已观察认证错误码映射 ErrAuthRequired，429 映射 ErrRateLimited，其余上游错误不包含 URL/响应体/凭据。Record 只输出白名单标量元数据，不包含原始 DTO、Cookie、CSRF、Token、签名 URL、题干、已有答案。禁止 getOpenQuizPaperDto/getOpenHomeworkPaperDto、报名、LearnVo 批量请求、进度上报、保存、提交或任何代做行为。没有隐式重试、休眠或循环轮询。
+## 认证、安全和测试
 
-默认测试完全使用本地脱敏 fixture 和注入 Transport，不访问真实平台。已覆盖 QR pending/scanned/authorized/expired、未知状态、token 换 Cookie、Scope 拒绝、两页课程、MOOC/SPOC、同 course 多 term、作业/考试/进度白名单、缺失 result/目录、空目录、重复分页、跨资源游标、取消/超时、限流、体积上限、跨域重定向和并发双用户 Cookie 隔离。
+扫码仍使用官方code.do/poll.do，二维码只允许官方图片域并升级HTTPS；2确认后必须换得STUDY_INFO与NTESSTUDYSI才授权。会话为敏感opaque []byte，仅父credential加密存储。每请求恢复独立Cookie jar，返回Page.Session供父持久化。HTTPS同源重定向最多6次，20s请求超时。401/403或已确认认证码返回ErrAuthRequired，429不重试；仅目录读对transport及408/502/503/504退避500ms/1s重试，解析和认证错误不重试。
 
-验收仅运行本包：
+禁止开卷RPC、申请作答、报名、保存/提交、进度写入或对未知/评测单元调用LearnVo。仅DWR CourseBean.getLessonUnitLearnVo(contentId,type,0,unitId)的3/4/6类型白名单允许，且不执行官方viewer随后独立调用的saveLearnInfo。DWR请求严格text/plain换行键值，响应仅解析data-only变量、属性、数组、标量、Date数值和单一remoteHandleCallback；不eval、不运行任意脚本。构建前累计容器/属性/数组槽（含不可达与稀疏数组）10000预算；延迟引用解析有环检测、深度24/10000节点、20000语句/字面量预算，分词时也提前限制嵌套与分段数量，保留合法emoji与转义富文本。默认测试仅注入Transport及脱敏fixture，不访问网络。覆盖真实unit/assessment枚举分离、单一exam、目录层次和完整字段、SPOC双期次与原Referer/owner、歧义映射拒绝、相同源节点跨scope独立、旧认证/边界/取消/并发隔离用例。
 
 ```bash
-gofmt -w internal/mooc/*.go
+gofmt -w internal/mooc/*.go cmd/mooc-inspect/main.go
 go test ./internal/mooc
 go test -race ./internal/mooc
 go vet ./internal/mooc
 ```
+
+诊断：在仅当前进程source .env后`go run ./cmd/mooc-inspect`，只接受唯一active MOOC连接；不改变中心业务数据。Acquire/Release仅用于合法加载已有密文，不写源记录或checkpoint。诊断输出不适合作为完整采集完成凭据。`MOOC_INSPECT_SYNC=1`通过真实Sync入口从空cursor读取最多12步、遇首个回复页即停止，仅输出记录类型、待处理计数及安全类型字段，不落库；当前会话6步读到15条reply，确认目录→正文→详情→回复状态机可用。续读旧checkpoint可能只处理原扫描末尾课程，少量调用不证明全账户重新读取；完整新轮需从当前轮终点后的空cursor开始，已保存记录不删除。`MOOC_INSPECT_COMPLETION=1`读取一个课程、一个讨论首帖、详情和第一页回复，输出结构及白名单布尔/计数，不输出回复正文或身份。2026-11-09当前会话验证详情与15条回复解析成功，21页/309回复仅首分页已真实读取；完整20页预算及截断用离线fixture覆盖，没有据此声称真实全帖已读完。全6门及SPOC双期次目录另有本轮真实只读形状验证。默认测试覆盖回复两期次路由保留、读操作白名单、私有资料丢弃、未知身份不变false、错误页/归属/重复/空循环拒绝、页与累计文本预算、进度零值及逐层时间独立。

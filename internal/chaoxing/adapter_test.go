@@ -44,6 +44,7 @@ func fixtureAdapter(t *testing.T, h http.HandlerFunc) *adapter {
 	if in.Jar != nil || in.Timeout != 0 || in.CheckRedirect != nil {
 		t.Fatal("mutated injected client")
 	}
+	a.(*adapter).client.Transport.(*pacedTransport).interval = 0
 	return a.(*adapter)
 }
 func authorized(scope contract.Scope) contract.Session {
@@ -134,6 +135,8 @@ func TestCourseAndAssignmentPagination(t *testing.T) {
 			fmt.Fprint(w, coursesFixture(51))
 		case "/visit/stucoursemiddle":
 			fmt.Fprint(w, `<input id=workEnc value='private-signature'><input id=enc value='private-stu'><input id=openc value='private-open'>`)
+		case "/mooc-ans/mooc2/work/task":
+			fmt.Fprint(w, `<div class="detailsHead"><div class="infoHead"><p>作答时间:11-04 09:30至11-08 23:59</p></div></div>`)
 		case "/mooc-ans/mooc2/work/list":
 			q := r.URL.Query()
 			if q.Get("enc") != "private-signature" || q.Get("stuenc") != "private-stu" {
@@ -214,6 +217,32 @@ func TestProgressNoticeAndExam(t *testing.T) {
 	exam, e := a.Sync(context.Background(), testScope, s, contract.Exam, "")
 	if e != nil || len(exam.Records) != 1 || exam.Records[0].ExternalID != "exam-1" {
 		t.Fatalf("exam %v %+v", e, exam)
+	}
+}
+func TestProgressPreservesInconsistentUpstreamCounts(t *testing.T) {
+	a := fixtureAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mycourse/backclazzdata":
+			fmt.Fprint(w, coursesFixture(2))
+		case "/visit/stucoursemiddle":
+			fmt.Fprint(w, `<input id=enc value='signature'>`)
+		case "/mooc2-ans/mycourse/studentcourse":
+			fmt.Fprint(w, `<h2>已完成任务点: <span>21</span>/16</h2>`)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	})
+	p, err := a.Sync(context.Background(), testScope, authorized(testScope), contract.Progress, "")
+	if err != nil || len(p.Records) != 1 || !p.HasMore {
+		t.Fatal("source inconsistency must not stop later courses", p, err)
+	}
+	f := p.Records[0].Fields
+	if f["completed"] != 21 || f["total"] != 16 || f["source_inconsistent"] != true || f["inconsistency_reason"] != "completed_exceeds_total" {
+		t.Fatal(f)
+	}
+	p, err = a.Sync(context.Background(), testScope, p.Session, contract.Progress, p.NextCursor)
+	if err != nil || len(p.Records) != 1 || p.HasMore {
+		t.Fatal("second course did not continue", p, err)
 	}
 }
 func TestFailuresAndExpiry(t *testing.T) {

@@ -4,7 +4,7 @@
 
 ## 事件范围
 
-- 学习通、MOOC、U校园来源记录：course、assignment、exam、progress、notice、discussion、discussion_reply_user、material（仅资料目录）。
+- 学习通、MOOC、U校园来源记录：course、schedule（教务课表）、assignment、exam、progress、notice、discussion、discussion_reply_user、material（仅资料目录）。
 - DWS 附件业务变化。
 - **DWS message 暂不触发**，等待消息权重/处理策略确定。
 - 用户管理、登录会话、Cookie、Token、CLI工作区、游标、租约、同步任务和抓取状态不作为模型业务事件发布。

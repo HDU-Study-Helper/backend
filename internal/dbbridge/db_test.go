@@ -25,7 +25,7 @@ func TestOpenConfiguration(t *testing.T) {
 
 // This helper never reads DATABASE_URL. TEST_DATABASE_URL must designate a
 // dedicated test database; every test uses and removes its own random schema.
-func testDB(t *testing.T) *DB { return testDBVersion(t, 5) }
+func testDB(t *testing.T) *DB { return testDBVersion(t, 15) }
 
 func testDBVersion(t *testing.T, version int) *DB {
 	t.Helper()
@@ -66,6 +66,9 @@ func testDBVersion(t *testing.T, version int) *DB {
 	if version == 3 {
 		_, e := db.pool.Exec(ctx, `CREATE TABLE dbbridge_migrations(version integer PRIMARY KEY,applied_at timestamptz NOT NULL DEFAULT now());`+schemaV1+schemaV2+schemaV3+`INSERT INTO dbbridge_migrations(version) VALUES(1),(2),(3);`)
 		must(t, e)
+	} else if version == 8 {
+		_, e := db.pool.Exec(ctx, `CREATE TABLE dbbridge_migrations(version integer PRIMARY KEY,applied_at timestamptz NOT NULL DEFAULT now());`+schemaV1+schemaV2+schemaV3+schemaV4+schemaV5+schemaV6+schemaV7+schemaV8+`INSERT INTO dbbridge_migrations(version) VALUES(1),(2),(3),(4),(5),(6),(7),(8);`)
+		must(t, e)
 	} else {
 		must(t, db.Migrate(ctx))
 	}
@@ -89,7 +92,7 @@ func TestPostgresMigrationAndUsers(t *testing.T) {
 	must(t, db.Migrate(ctx))
 	var n int
 	must(t, db.pool.QueryRow(ctx, `SELECT count(*) FROM dbbridge_migrations`).Scan(&n))
-	if n != 5 {
+	if n != 15 {
 		t.Fatal("migration not idempotent")
 	}
 	u, created, e := db.Users().BootstrapAdmin(ctx, model.User{Username: "admin", DisplayName: "Admin", PasswordHash: "fixture-hash"})

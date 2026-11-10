@@ -29,7 +29,9 @@ CREATE INDEX platform_records_page ON platform_records(user_id,connection_id,kin
 type platformRepo struct{ db *DB }
 
 func (d *DB) Platforms() model.PlatformRepository { return &platformRepo{d} }
-func validSource(s string) bool                   { return s == "chaoxing" || s == "mooc" || s == "ucampus" }
+func validSource(s string) bool {
+	return s == "chaoxing" || s == "mooc" || s == "ucampus" || s == "jwxt"
+}
 func scanPlatform(row pgx.Row) (c model.PlatformConnection, err error) {
 	err = row.Scan(&c.ID, &c.UserID, &c.Source, &c.State, &c.Enabled, &c.ErrorCode, &c.UpdatedAt)
 	return c, storageError(err)
@@ -66,13 +68,13 @@ func (r *platformRepo) Get(ctx context.Context, s model.DWSScope) (model.Platfor
 	return scanPlatform(r.db.pool.QueryRow(ctx, `SELECT `+platformCols+` FROM platform_connections WHERE user_id=$1 AND id=$2`, s.UserID, s.ConnectionID))
 }
 func (r *platformRepo) List(ctx context.Context, owner string) ([]model.PlatformConnection, error) {
-	return r.query(ctx, `SELECT `+platformCols+` FROM platform_connections WHERE user_id=$1 ORDER BY id LIMIT 100`, owner)
+	return r.query(ctx, `SELECT `+platformCols+` FROM platform_connections WHERE user_id=$1 AND enabled ORDER BY id LIMIT 100`, owner)
 }
 func (r *platformRepo) Targets(ctx context.Context, after string, limit int) ([]model.PlatformConnection, error) {
 	if limit < 1 || limit > 100 {
 		return nil, model.ErrInvalidArgument
 	}
-	return r.query(ctx, `SELECT c.id,c.user_id,c.source,c.state,c.enabled,c.error_code,c.updated_at FROM platform_connections c JOIN users u ON u.id=c.user_id WHERE c.id>$1 AND c.enabled AND NOT u.disabled AND c.state='active' ORDER BY c.id LIMIT $2`, after, limit)
+	return r.query(ctx, `SELECT c.id,c.user_id,c.source,c.state,c.enabled,c.error_code,c.updated_at FROM platform_connections c JOIN users u ON u.id=c.user_id WHERE c.id>$1 AND c.enabled AND NOT u.disabled AND c.state='active' AND c.source<>'jwxt' ORDER BY c.id LIMIT $2`, after, limit)
 }
 func (r *platformRepo) query(ctx context.Context, q string, args ...any) ([]model.PlatformConnection, error) {
 	rows, e := r.db.pool.Query(ctx, q, args...)
@@ -170,7 +172,20 @@ func (r *platformRepo) SaveAuth(ctx context.Context, l model.PlatformLease, sess
 	})
 }
 func (r *platformRepo) Commit(ctx context.Context, l model.PlatformLease, kind string, records []model.PlatformRecord, session, cursor []byte) error {
-	if len(records) > 500 || len(session) > 2<<20 || len(cursor) > 2<<20 {
+	return r.commit(ctx, l, kind, records, session, cursor, nil, nil)
+}
+func (r *platformRepo) CommitTimetable(ctx context.Context, l model.PlatformLease, records []model.PlatformRecord, session []byte, b model.TimetableRefresh) (model.TimetableResult, error) {
+	var result model.TimetableResult
+	err := r.commit(ctx, l, "schedule", records, session, nil, &b, &result)
+	result.Records = len(records)
+	return result, err
+}
+func (r *platformRepo) commit(ctx context.Context, l model.PlatformLease, kind string, records []model.PlatformRecord, session, cursor []byte, full *model.TimetableRefresh, result *model.TimetableResult) error {
+	maxRecords := 500
+	if full != nil {
+		maxRecords = 5000
+	}
+	if len(records) > maxRecords || len(session) > 2<<20 || len(cursor) > 2<<20 {
 		return model.ErrInvalidArgument
 	}
 	total := 0
@@ -184,6 +199,9 @@ func (r *platformRepo) Commit(ctx context.Context, l model.PlatformLease, kind s
 		return model.ErrInvalidArgument
 	}
 	var changes []trigger.Change
+	var snapshots []model.ControlChange
+	sourceName := ""
+	created, updated, unchanged := 0, 0, 0
 	err := r.db.transaction(ctx, func(tx pgx.Tx) error {
 		if e := platformLock(ctx, tx, l); e != nil {
 			return e
@@ -192,8 +210,30 @@ func (r *platformRepo) Commit(ctx context.Context, l model.PlatformLease, kind s
 		if e := tx.QueryRow(ctx, `SELECT source,state FROM platform_connections WHERE user_id=$1 AND id=$2`, l.Scope.UserID, l.Scope.ConnectionID).Scan(&source, &state); e != nil {
 			return storageError(e)
 		}
+		sourceName = source
 		if state != "active" {
 			return model.ErrConflict
+		}
+		var filterErr error
+		records, filterErr = filterExcludedPlatformRecords(ctx, tx, l.Scope.UserID, l.Scope.ConnectionID, source, records)
+		if filterErr != nil {
+			return filterErr
+		}
+		if full != nil {
+			if source != "jwxt" || kind != "schedule" {
+				return model.ErrInvalidArgument
+			}
+			parentBytes, _ := json.Marshal([]string{strconv.Itoa(full.AcademicYear), strconv.Itoa(full.Term)})
+			ids := []string{}
+			for _, v := range records {
+				if v.ParentID != string(parentBytes) {
+					return model.ErrInvalidArgument
+				}
+				ids = append(ids, v.ExternalID)
+			}
+			if _, e := tx.Exec(ctx, `DELETE FROM platform_records WHERE user_id=$1 AND connection_id=$2 AND kind='schedule' AND parent_id=$3 AND NOT(external_id=ANY($4::text[]))`, l.Scope.UserID, l.Scope.ConnectionID, string(parentBytes), ids); e != nil {
+				return storageError(e)
+			}
 		}
 		for _, v := range records {
 			if v.Source != source {
@@ -210,18 +250,37 @@ func (r *platformRepo) Commit(ctx context.Context, l model.PlatformLease, kind s
 				return storageError(e)
 			}
 			if e == nil && previousHash == v.Hash {
+				unchanged++
 				continue
 			}
 			operation := trigger.Updated
 			if e == pgx.ErrNoRows {
 				operation = trigger.Created
+				created++
+			}
+			if operation == trigger.Updated {
+				updated++
 			}
 			var id int64
 			e = tx.QueryRow(ctx, `INSERT INTO platform_records(user_id,connection_id,source,kind,external_id,parent_id,hash,content,observed_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(user_id,connection_id,kind,external_id,parent_id) DO UPDATE SET hash=EXCLUDED.hash,content=EXCLUDED.content,observed_at=EXCLUDED.observed_at WHERE platform_records.hash<>EXCLUDED.hash RETURNING id`, l.Scope.UserID, l.Scope.ConnectionID, source, kind, v.ExternalID, v.ParentID, v.Hash, []byte(v.Content), v.ObservedAt).Scan(&id)
 			if e != nil {
 				return storageError(e)
 			}
+			snapshots = append(snapshots, model.ControlChange{Operation: string(operation), Resource: kind, ConnectionID: l.Scope.ConnectionID, RecordID: strconv.FormatInt(id, 10), Before: before, After: v.Content, ChangedFields: trigger.FieldChanges(before, v.Content), OccurredAt: v.ObservedAt})
 			changes = append(changes, trigger.Change{UserID: l.Scope.UserID, ConnectionID: l.Scope.ConnectionID, Source: source, Resource: kind, RecordID: strconv.FormatInt(id, 10), ExternalID: v.ExternalID, ParentID: v.ParentID, Operation: operation, ChangedFields: trigger.FieldChanges(before, v.Content), OccurredAt: v.ObservedAt})
+		}
+		if e := syncAcademicConnection(ctx, tx, l.Scope.UserID, l.Scope.ConnectionID); e != nil {
+			return e
+		}
+		if e := captureControl(ctx, tx, l.Scope.UserID, source, snapshots); e != nil {
+			return e
+		}
+		if full != nil {
+			refreshed, e := refreshTimetable(ctx, tx, l.Scope.UserID, *full)
+			if e != nil {
+				return e
+			}
+			*result = refreshed
 		}
 		if _, e := tx.Exec(ctx, `UPDATE platform_connections SET session=$3,error_code='',updated_at=clock_timestamp() WHERE user_id=$1 AND id=$2`, l.Scope.UserID, l.Scope.ConnectionID, nonNil(session)); e != nil {
 			return storageError(e)
@@ -230,13 +289,14 @@ func (r *platformRepo) Commit(ctx context.Context, l model.PlatformLease, kind s
 		return storageError(e)
 	})
 	if err == nil {
+		model.RefreshCommitted(ctx, sourceName, created, updated, unchanged)
 		r.db.emit(ctx, changes)
 	}
 	return err
 }
 func (r *platformRepo) Fail(ctx context.Context, l model.PlatformLease, code string) error {
 	switch code {
-	case "auth_required", "parse_failed", "rate_limited", "unsupported", "upstream_unavailable", "invalid_argument":
+	case "auth_required", "parse_failed", "rate_limited", "verification_required", "unsupported", "upstream_unavailable", "invalid_argument":
 	default:
 		code = "internal"
 	}

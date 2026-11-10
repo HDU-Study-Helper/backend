@@ -61,7 +61,7 @@ func Eligible(c Change) bool {
 		return false
 	}
 	switch c.Resource {
-	case "course", "assignment", "exam", "progress", "notice", "discussion", "discussion_reply_user", "material", "attachment":
+	case "course", "schedule", "assignment", "exam", "progress", "notice", "discussion", "discussion_reply_user", "material", "attachment":
 		return true
 	default:
 		return false

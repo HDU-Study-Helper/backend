@@ -44,6 +44,7 @@ type activeOperation struct {
 }
 
 type Service struct {
+	workerMu    sync.Mutex
 	repo        model.DWSRepository
 	vault       *credential.Vault
 	cfg         Config
@@ -80,7 +81,7 @@ func New(repo model.DWSRepository, vault *credential.Vault, cfg Config) (*Servic
 		cfg.WorkspaceRoot = "/dev/shm"
 	}
 	if cfg.PollInterval == 0 {
-		cfg.PollInterval = time.Minute
+		cfg.PollInterval = 10 * time.Minute
 	}
 	if cfg.CommandTimeout == 0 {
 		cfg.CommandTimeout = 30 * time.Second
@@ -89,7 +90,7 @@ func New(repo model.DWSRepository, vault *credential.Vault, cfg Config) (*Servic
 		cfg.Overlap = 5 * time.Minute
 	}
 	if cfg.InitialLookback == 0 {
-		cfg.InitialLookback = 24 * time.Hour
+		cfg.InitialLookback = 30 * 24 * time.Hour
 	}
 	if cfg.PollInterval < time.Second || cfg.CommandTimeout < time.Second || cfg.CommandTimeout > time.Minute || cfg.Overlap < 0 || cfg.InitialLookback <= 0 || cfg.InitialLookback > 30*24*time.Hour {
 		return nil, model.ErrInvalidArgument
@@ -293,6 +294,20 @@ func (s *Service) CheckSession(ctx context.Context, scope model.DWSScope) (AuthS
 	return status, e
 }
 func (s *Service) Sync(ctx context.Context, scope model.DWSScope, group, job string) error {
+	return s.syncWindow(ctx, scope, group, job, 0)
+}
+
+// SyncHistory is an operator entry point for bounded history repair. It preserves
+// the allowlist, lease fencing, deduplication and atomic watermark commit of Sync.
+// It does not delete or rewind a checkpoint. Subsequent Sync calls stay incremental.
+func (s *Service) SyncHistory(ctx context.Context, scope model.DWSScope, group string, days int) error {
+	if days < 1 || days > 30 {
+		return model.ErrInvalidArgument
+	}
+	return s.syncWindow(ctx, scope, group, "", time.Duration(days)*24*time.Hour)
+}
+
+func (s *Service) syncWindow(ctx context.Context, scope model.DWSScope, group, job string, history time.Duration) error {
 	e := s.withWorkspace(ctx, scope, "", func(ctx context.Context, c model.DWSConnection, l model.Lease, root string) (resultErr error) {
 		defer func() {
 			if resultErr != nil && !errors.Is(resultErr, errWorkspaceCommitted) && job != "" {
@@ -328,7 +343,9 @@ func (s *Service) Sync(ctx context.Context, scope model.DWSScope, group, job str
 		}
 		end := time.Now().UTC()
 		start := end.Add(-s.cfg.InitialLookback)
-		if !cp.PollWatermark.IsZero() {
+		if history > 0 {
+			start = end.Add(-history)
+		} else if !cp.PollWatermark.IsZero() {
 			start = cp.PollWatermark.Add(-s.cfg.Overlap)
 		}
 		token := ""
@@ -402,50 +419,80 @@ func (s *Service) Run(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = s.CloseLinks(context.Background()) }()
-	timer := time.NewTimer(0)
-	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case t := <-s.queue:
+			s.workerMu.Lock()
 			_ = s.Sync(ctx, t.scope, t.group, t.job)
-		case <-timer.C:
-			s.pruneLinks()
-			after := ""
-			for {
-				connections, e := s.repo.ListPollTargets(ctx, 100, after)
-				if e != nil {
-					break
-				}
-				for _, c := range connections {
-					scope := model.DWSScope{UserID: c.UserID, ConnectionID: c.ID}
-					pending, e := s.repo.ListPendingJobs(ctx, scope, 100)
-					if e == nil {
-						for _, j := range pending {
-							_ = s.Sync(ctx, scope, j.GroupID, j.ID)
-						}
-					}
-					groups, e := s.repo.ListGroups(ctx, scope)
-					if e != nil {
-						continue
-					}
-					for _, g := range groups {
-						if ctx.Err() != nil {
-							return ctx.Err()
-						}
-						job, e := s.repo.CreateJob(ctx, scope, g.ID)
-						if e == nil {
-							_ = s.Sync(ctx, scope, g.ID, job.ID)
-						}
-					}
-				}
-				if len(connections) < 100 {
-					break
-				}
-				after = connections[len(connections)-1].ID
-			}
-			timer.Reset(s.cfg.PollInterval)
+			s.workerMu.Unlock()
 		}
+	}
+}
+
+// Poll performs one scan, serially with queued manual DWS jobs.
+func (s *Service) Poll(ctx context.Context) bool {
+	s.workerMu.Lock()
+	defer s.workerMu.Unlock()
+	s.pruneLinks()
+	failed := false
+	after := ""
+	for {
+		connections, err := s.repo.ListPollTargets(ctx, 100, after)
+		if err != nil {
+			model.RefreshFailure(ctx, "dws", "target_list_failed")
+			return true
+		}
+		for _, c := range connections {
+			if ctx.Err() != nil {
+				return true
+			}
+			model.RefreshConnection(ctx, "dws")
+			scope := model.DWSScope{UserID: c.UserID, ConnectionID: c.ID}
+			pending, err := s.repo.ListPendingJobs(ctx, scope, 100)
+			if err != nil {
+				failed = true
+				model.RefreshFailure(ctx, "dws", "pending_jobs_failed")
+			} else {
+				for _, j := range pending {
+					err := s.Sync(ctx, scope, j.GroupID, j.ID)
+					code := ""
+					if err != nil {
+						failed = true
+						code = safeCode(err)
+					}
+					model.RefreshAttempt(ctx, "dws", code)
+				}
+			}
+			groups, err := s.repo.ListGroups(ctx, scope)
+			if err != nil {
+				failed = true
+				model.RefreshFailure(ctx, "dws", "group_list_failed")
+				continue
+			}
+			for _, g := range groups {
+				if ctx.Err() != nil {
+					return true
+				}
+				job, err := s.repo.CreateJob(ctx, scope, g.ID)
+				if err != nil {
+					failed = true
+					model.RefreshFailure(ctx, "dws", "job_create_failed")
+					continue
+				}
+				err = s.Sync(ctx, scope, g.ID, job.ID)
+				code := ""
+				if err != nil {
+					failed = true
+					code = safeCode(err)
+				}
+				model.RefreshAttempt(ctx, "dws", code)
+			}
+		}
+		if len(connections) < 100 {
+			return failed
+		}
+		after = connections[len(connections)-1].ID
 	}
 }

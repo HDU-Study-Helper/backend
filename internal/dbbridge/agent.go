@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	f "academic/agent/framework"
+	"academic/backend/internal/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -57,7 +58,7 @@ func activeOwner(ctx context.Context, tx pgx.Tx, owner string) error {
 	return agentError(tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 AND NOT disabled FOR SHARE`, owner).Scan(&id))
 }
 func (r *agents) PutAgent(ctx context.Context, a f.AgentInstance) (result f.AgentInstance, err error) {
-	if a.ID == "" || a.OwnerID == "" || a.Name == "" || a.Model.Provider == "" || a.Model.Model == "" || (a.Status != "enabled" && a.Status != "disabled") {
+	if a.ID == "" || a.OwnerID == "" || a.Name == "" || a.Model.Provider == "" || (a.Model.Model == "" && a.Model.Mode != "default") || (a.Model.Mode != "" && a.Model.Mode != "default" && a.Model.Mode != "custom") || (a.Status != "enabled" && a.Status != "disabled") {
 		return result, f.Fail("INVALID_ARGUMENT", "invalid agent")
 	}
 	a.Limits = a.Limits.Defaults()
@@ -135,79 +136,6 @@ func affected(tag pgconn.CommandTag, err error) error {
 	return nil
 }
 
-const memoryCols = `memory_id,owner_user_id,agent_id,title,content,category,priority,created_at,updated_at`
-
-func scanMemory(row pgx.Row) (m f.Memory, err error) {
-	err = row.Scan(&m.ID, &m.OwnerID, &m.AgentID, &m.Title, &m.Content, &m.Category, &m.Priority, &m.CreatedAt, &m.UpdatedAt)
-	return m, agentError(err)
-}
-func (r *agents) SaveMemory(ctx context.Context, s f.Scope, m f.Memory, create bool) (result f.Memory, err error) {
-	if strings.TrimSpace(m.Title) == "" || len(m.Title) > 2048 || strings.TrimSpace(m.Content) == "" || len(m.Content) > 262144 || m.Priority < -100 || m.Priority > 100 {
-		return result, f.Fail("INVALID_ARGUMENT", "invalid memory")
-	}
-	m.OwnerID = s.OwnerID
-	m.AgentID = s.AgentID
-	err = r.tx(ctx, func(tx pgx.Tx) error {
-		if e := activeAgent(ctx, tx, s); e != nil {
-			return e
-		}
-		var e error
-		if create {
-			m.ID = f.NewID()
-			result, e = scanMemory(tx.QueryRow(ctx, `INSERT INTO agent_memories(memory_id,owner_user_id,agent_id,title,content,category,priority) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING `+memoryCols, m.ID, s.OwnerID, s.AgentID, m.Title, m.Content, m.Category, m.Priority))
-		} else {
-			result, e = scanMemory(tx.QueryRow(ctx, `UPDATE agent_memories SET title=$4,content=$5,category=$6,priority=$7,updated_at=clock_timestamp() WHERE owner_user_id=$1 AND agent_id=$2 AND memory_id=$3 RETURNING `+memoryCols, s.OwnerID, s.AgentID, m.ID, m.Title, m.Content, m.Category, m.Priority))
-		}
-		return e
-	})
-	return
-}
-func (r *agents) GetMemory(ctx context.Context, s f.Scope, id string) (result f.Memory, err error) {
-	err = r.tx(ctx, func(tx pgx.Tx) error {
-		if e := activeAgent(ctx, tx, s); e != nil {
-			return e
-		}
-		var e error
-		result, e = scanMemory(tx.QueryRow(ctx, `SELECT `+memoryCols+` FROM agent_memories WHERE owner_user_id=$1 AND agent_id=$2 AND memory_id=$3`, s.OwnerID, s.AgentID, id))
-		return e
-	})
-	return
-}
-func (r *agents) ListMemory(ctx context.Context, s f.Scope, query string, limit int) (out []f.Memory, err error) {
-	if limit < 1 || limit > 1000 || len(query) > 2048 {
-		return nil, f.Fail("INVALID_ARGUMENT", "invalid memory query")
-	}
-	out = []f.Memory{}
-	err = r.tx(ctx, func(tx pgx.Tx) error {
-		if e := activeAgent(ctx, tx, s); e != nil {
-			return e
-		}
-		rows, e := tx.Query(ctx, `SELECT `+memoryCols+` FROM agent_memories WHERE owner_user_id=$1 AND agent_id=$2 AND ($3='' OR strpos(lower(title||' '||content),lower($3))>0) ORDER BY priority DESC,created_at,memory_id LIMIT $4`, s.OwnerID, s.AgentID, query, limit)
-		if e != nil {
-			return agentError(e)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			m, e := scanMemory(rows)
-			if e != nil {
-				return e
-			}
-			out = append(out, m)
-		}
-		return agentError(rows.Err())
-	})
-	return
-}
-func (r *agents) DeleteMemory(ctx context.Context, s f.Scope, id string) error {
-	return r.tx(ctx, func(tx pgx.Tx) error {
-		if e := activeAgent(ctx, tx, s); e != nil {
-			return e
-		}
-		tag, e := tx.Exec(ctx, `DELETE FROM agent_memories WHERE owner_user_id=$1 AND agent_id=$2 AND memory_id=$3`, s.OwnerID, s.AgentID, id)
-		return affected(tag, e)
-	})
-}
-
 const workflowCols = `workflow_id,owner_user_id,name,description,COALESCE(parent_workflow_id,''),definition,version,status,created_by_agent_id,created_at,updated_at`
 
 func scanWorkflow(row pgx.Row) (w f.Workflow, err error) {
@@ -215,6 +143,20 @@ func scanWorkflow(row pgx.Row) (w f.Workflow, err error) {
 	return w, agentError(err)
 }
 func (r *agents) SaveWorkflow(ctx context.Context, s f.Scope, w f.Workflow, create bool) (result f.Workflow, err error) {
+	err = r.tx(ctx, func(tx pgx.Tx) error {
+		var e error
+		result, e = saveWorkflowTx(ctx, tx, s, w, create)
+		return e
+	})
+	if err != nil {
+		return f.Workflow{}, err
+	}
+	return result, nil
+}
+
+// saveWorkflowTx is shared with the atomic private profile initializer. Callers
+// must use a single transaction and must not return its result before commit.
+func saveWorkflowTx(ctx context.Context, tx pgx.Tx, s f.Scope, w f.Workflow, create bool) (result f.Workflow, err error) {
 	var definition map[string]any
 	if strings.TrimSpace(w.Name) == "" || len(w.Name) > 1024 || len(w.Definition) > 1<<20 || json.Unmarshal(w.Definition, &definition) != nil || definition == nil {
 		return result, f.Fail("INVALID_ARGUMENT", "invalid workflow definition")
@@ -222,16 +164,30 @@ func (r *agents) SaveWorkflow(ctx context.Context, s f.Scope, w f.Workflow, crea
 	if w.Status == "" {
 		w.Status = "draft"
 	}
+	if w.Status == "active" && !model.ValidWorkflowEntity(w.Definition) {
+		return result, f.Fail("INVALID_ARGUMENT", "active Workflow必须具有具体entity：kind为course/competition/task/identity，id和name不可为课程、网课、考试等泛称")
+	}
 	if w.Status != "draft" && w.Status != "active" && w.Status != "archived" {
 		return result, f.Fail("INVALID_ARGUMENT", "invalid workflow status")
 	}
-	err = r.tx(ctx, func(tx pgx.Tx) error {
+	err = func() error {
 		// Serializes workflow tree writes per owner, preventing concurrent cycle creation.
 		if _, e := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,730022405))`, s.OwnerID); e != nil {
 			return agentError(e)
 		}
 		if e := activeAgent(ctx, tx, s); e != nil {
 			return e
+		}
+		if w.Status == "active" {
+			entity := definition["entity"].(map[string]any)
+			var existing string
+			e := tx.QueryRow(ctx, `SELECT workflow_id FROM agent_workflows WHERE owner_user_id=$1 AND status='active' AND definition->'entity'->>'kind'=$2 AND definition->'entity'->>'id'=$3 AND workflow_id<>$4 AND (name=$5 OR (COALESCE(definition->>'goal','')<>'' AND definition->>'goal'=$6)) LIMIT 1`, s.OwnerID, entity["kind"], entity["id"], w.ID, w.Name, definition["goal"]).Scan(&existing)
+			if e == nil {
+				return f.Fail("CONFLICT", "该具体实体已有同名或同目标active Workflow："+existing+"；请workflow_get核查后复用或最小更新，不要重复创建")
+			}
+			if !errors.Is(e, pgx.ErrNoRows) {
+				return agentError(e)
+			}
 		}
 		if create {
 			w.ID = f.NewID()
@@ -275,7 +231,7 @@ func (r *agents) SaveWorkflow(ctx context.Context, s f.Scope, w f.Workflow, crea
 		}
 		_, e = tx.Exec(ctx, `INSERT INTO agent_workflow_versions(owner_user_id,workflow_id,version,snapshot) VALUES($1,$2,$3,$4)`, s.OwnerID, w.ID, w.Version, raw)
 		return agentError(e)
-	})
+	}()
 	return
 }
 func (r *agents) GetWorkflow(ctx context.Context, owner, id string) (result f.Workflow, err error) {

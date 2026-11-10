@@ -20,7 +20,7 @@ func latestRecord(content string, at time.Time) model.PlatformRecord {
 
 func TestPostgresLatestPlatformAndTriggers(t *testing.T) {
 	db := testDB(t)
-	ctx := context.Background()
+	ctx, stats := model.WithRefreshReport(context.Background())
 	u := fixtureUser(t, db, "latest", model.RoleUser)
 	r := db.Platforms()
 	c, e := r.Create(ctx, u.ID, "chaoxing")
@@ -79,13 +79,28 @@ func TestPostgresLatestPlatformAndTriggers(t *testing.T) {
 	if len(changes) != 3 || rows[0].Hash != a.Hash {
 		t.Fatal("rollback emitted or persisted")
 	}
+	result := stats.Snapshot()[0]
+	if result.Created != 1 || result.Updated != 2 || result.Unchanged != 1 {
+		t.Fatalf("committed platform counts (rollback excluded): %+v", result)
+	}
 	db.SetTriggerHandler(nil)
-	must(t, r.Commit(ctx, l, "course", []model.PlatformRecord{b}, nil, nil))
+	must(t, r.Release(ctx, l))
+	must(t, r.Disconnect(ctx, scope))
+	connections, e := r.List(ctx, u.ID)
+	must(t, e)
+	if len(connections) != 0 {
+		t.Fatal("disconnected platform still listed")
+	}
+	rows, e = r.Records(ctx, scope, "course", 0, 10)
+	must(t, e)
+	if len(rows) != 1 {
+		t.Fatal("disconnect deleted archived platform data")
+	}
 }
 
 func TestPostgresLatestDWSAndAttachmentTriggers(t *testing.T) {
 	db := testDB(t)
-	ctx := context.Background()
+	ctx, stats := model.WithRefreshReport(context.Background())
 	u := fixtureUser(t, db, "latest-dws", model.RoleUser)
 	r := db.DWS()
 	c, e := r.CreateConnection(ctx, model.DWSConnection{UserID: u.ID, Profile: "fixture"})
@@ -125,6 +140,20 @@ func TestPostgresLatestDWSAndAttachmentTriggers(t *testing.T) {
 	if len(rows) != 1 || rows[0].ID != id || string(rows[0].Content) != "A" || len(changes) != 0 {
 		t.Fatal("DWS latest/noevent failed")
 	}
+	result := stats.Snapshot()[0]
+	if result.Created != 1 || result.Updated != 2 || result.Unchanged != 1 {
+		t.Fatalf("committed DWS counts: %+v", result)
+	}
+	// A stale watermark fails after row writes; none of its counts may escape rollback.
+	beforeStats := stats.Snapshot()[0]
+	bad := m
+	bad.ExternalID = "rolled-back"
+	if err := r.CommitSync(ctx, l, model.SyncCommit{Messages: []model.Message{bad}, Checkpoint: model.Checkpoint{GroupID: "g", PollWatermark: at.Add(-time.Second)}}); err == nil {
+		t.Fatal("stale checkpoint accepted")
+	}
+	if stats.Snapshot()[0] != beforeStats {
+		t.Fatal("rolled back DWS writes counted")
+	}
 	a := model.Attachment{ID: "a", MessageID: id, Name: "a.txt", MediaType: "text/plain", Data: []byte("old")}
 	put := func() {
 		h := sha256.Sum256(a.Data)
@@ -162,6 +191,17 @@ func TestPostgresLatestDWSAndAttachmentTriggers(t *testing.T) {
 	}
 	if len(changes) != 2 {
 		t.Fatal("rollback emitted")
+	}
+	must(t, r.Disconnect(ctx, s))
+	connections, e := r.ListConnections(ctx, u.ID)
+	must(t, e)
+	if len(connections) != 0 {
+		t.Fatal("disconnected DWS still listed")
+	}
+	rows, e = r.ListMessages(ctx, s, "g", 0, 100)
+	must(t, e)
+	if len(rows) != 1 {
+		t.Fatal("disconnect deleted archived DWS messages")
 	}
 }
 

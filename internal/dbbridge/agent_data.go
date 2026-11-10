@@ -2,12 +2,9 @@ package dbbridge
 
 import (
 	"context"
-	"fmt"
 	"strings"
-	"time"
 
 	f "academic/agent/framework"
-	"github.com/jackc/pgx/v5"
 )
 
 // AgentData exposes a small readonly projection of existing per-owner platform records.
@@ -16,7 +13,71 @@ func (d *DB) AgentData() f.DataService { return &agentData{db: d} }
 
 type agentData struct{ db *DB }
 
-var dataFields = map[string]string{"id": "r.id::text", "connection_id": "r.connection_id", "source": "r.source", "kind": "r.kind", "external_id": "r.external_id", "parent_id": "r.parent_id", "title": "COALESCE(r.content->>'title','')", "text": "COALESCE(r.content->>'text','')"}
+// Keep catalog order stable and build SQL only from this server-owned allowlist.
+// Every projected value is text. Source epoch numbers/booleans remain their raw
+// textual value; the model must not treat availability dates as publication or
+// invent a schedule instant from an untyped timestamp or source status code.
+var dataFieldOrder = []string{
+	"id", "connection_id", "source", "kind", "external_id", "parent_id", "title", "text",
+	"course_id", "class_id", "term_id", "course_name", "task_type",
+	"status", "source_status", "submission_status", "availability_status", "finish_status", "learn_status", "progress", "completed", "total",
+	"deadline", "start_time", "end_time", "published_at", "source_time", "time_raw",
+	"file_type", "size_raw", "path", "is_folder",
+	"academic_year", "term", "entry_type", "class_name", "credits_raw", "category", "course_category", "nature",
+	"teacher", "teacher_raw", "teacher_name", "location", "location_raw", "campus", "assessment_raw",
+	"total_hours_raw", "weekly_hours_raw", "schedule_raw", "weekday", "periods_raw", "weeks_raw", "identity_source",
+	"node_id", "parent_node_id", "order", "coverage", "task_point_total", "task_point_remaining", "task_point_completed", "personal_status",
+	"answer_time_raw", "answer_time_source", "question_count", "full_score", "header_status", "metadata",
+}
+
+// sourceScalar rejects objects/arrays even for an allowed key. Do not expose the
+// complete fields object: older or malformed records could contain private state.
+func sourceScalar(path ...string) string {
+	quoted := make([]string, len(path))
+	for i, part := range path {
+		quoted[i] = "'" + strings.ReplaceAll(part, "'", "''") + "'"
+	}
+	p := "ARRAY[" + strings.Join(quoted, ",") + "]::text[]"
+	return "CASE WHEN jsonb_typeof(r.content #> " + p + ") IN ('string','number','boolean') THEN NULLIF(r.content #>> " + p + ",'') END"
+}
+
+func sourceFields(keys ...string) string {
+	values := make([]string, 0, len(keys)+1)
+	for _, key := range keys {
+		values = append(values, sourceScalar("fields", key))
+	}
+	return "COALESCE(" + strings.Join(append(values, "''"), ",") + ")"
+}
+
+var dataFields = map[string]string{
+	"id": "r.id::text", "connection_id": "r.connection_id", "source": "r.source", "kind": "r.kind", "external_id": "r.external_id", "parent_id": "r.parent_id",
+	"title":               "COALESCE(" + sourceScalar("title") + ",'')",
+	"text":                "COALESCE(" + sourceScalar("content") + "," + sourceScalar("text") + ",'')",
+	"course_id":           sourceFields("course_id", "courseId"),
+	"class_id":            sourceFields("class_id", "classId"),
+	"term_id":             sourceFields("term_id", "termId"),
+	"course_name":         "COALESCE(" + sourceScalar("fields", "course_name") + "," + sourceScalar("fields", "courseName") + ",CASE WHEN r.kind='course' THEN " + sourceScalar("title") + " END,'')",
+	"task_type":           sourceFields("task_type"),
+	"status":              sourceFields("status", "statusText", "statusName", "submission_status", "submitStatus", "finishStatus", "learnStatus"),
+	"source_status":       sourceFields("status", "statusText", "statusName", "submission_status", "submitStatus", "finishStatus", "learnStatus"),
+	"submission_status":   sourceFields("submission_status", "submitStatus"),
+	"availability_status": sourceFields("availability_status"),
+	"finish_status":       sourceFields("finishStatus"),
+	"learn_status":        sourceFields("learnStatus"),
+	"progress":            sourceFields("progress"), "completed": sourceFields("completed"), "total": sourceFields("total"),
+	// Only explicitly named task deadlines are aliases. endTime/closeTime and
+	// U-campus strategies.end_time are availability, never fallback deadlines.
+	"deadline":     sourceFields("deadline", "submitEndTime", "homeworkEndTime", "examEndTime", "testEndTime", "jobDeadline"),
+	"start_time":   "COALESCE(" + sourceScalar("fields", "start_time") + "," + sourceScalar("fields", "startTime") + "," + sourceScalar("fields", "examStartTime") + "," + sourceScalar("fields", "start_time_raw") + "," + sourceScalar("fields", "strategies", "start_time") + ",'')",
+	"end_time":     "COALESCE(" + sourceScalar("fields", "end_time") + "," + sourceScalar("fields", "endTime") + "," + sourceScalar("fields", "closeTime") + "," + sourceScalar("fields", "end_time_raw") + "," + sourceScalar("fields", "strategies", "end_time") + ",'')",
+	"published_at": sourceFields("published_at", "publish_time", "publishTime", "releaseTime"),
+	"source_time":  sourceFields("time_raw", "createTime", "sendTime", "insertTime"),
+	"time_raw":     sourceFields("time_raw"),
+	"file_type":    sourceFields("file_type"), "size_raw": sourceFields("size_raw"), "is_folder": sourceFields("is_folder"),
+	// Only arrays of strings are exposed; nested objects or signed metadata
+	// cannot leak through the directory path projection.
+	"path": "CASE WHEN jsonb_typeof(r.content #> '{fields,path}')='array' THEN CASE WHEN NOT EXISTS (SELECT 1 FROM jsonb_array_elements(r.content #> '{fields,path}') AS p(value) WHERE jsonb_typeof(p.value)<>'string') THEN (r.content #> '{fields,path}')::text ELSE '' END ELSE '' END",
+}
 
 func (r *agentData) Catalog(ctx context.Context, s f.Scope) ([]f.Dataset, error) {
 	var owner string
@@ -24,76 +85,87 @@ func (r *agentData) Catalog(ctx context.Context, s f.Scope) ([]f.Dataset, error)
 		return nil, agentError(err)
 	}
 	fields := []f.Field{}
-	for _, name := range []string{"id", "connection_id", "source", "kind", "external_id", "parent_id", "title", "text"} {
+	for _, name := range dataFieldOrder {
 		fields = append(fields, f.Field{Name: name, Type: "string"})
 	}
-	return []f.Dataset{{Name: "platform_records", Fields: fields}}, nil
+	out := append([]f.Dataset{{Name: "platform_records", Fields: fields}}, academicCatalog()...)
+	return append(out, profileDataCatalog()...), nil
 }
 func (r *agentData) Query(ctx context.Context, s f.Scope, q f.Query) (result f.QueryResult, err error) {
-	if s.OwnerID == "" || q.Dataset != "platform_records" || len(q.Fields) < 1 || len(q.Fields) > 32 || q.Limit < 1 || q.Limit > 100 || q.Offset < 0 || q.Offset > 10000 || len(q.Filters) > 20 {
-		return result, f.Fail("PERMISSION_DENIED", "query is outside authorized dataset constraints")
+	return r.queryDataset(ctx, s, q)
+}
+
+// jsonFieldProjection builds a JSON object from explicitly allowed scalar keys
+// and arrays of scalar values. Nested objects, credentials and transport URLs
+// cannot enter model input through a nominally safe metadata key.
+func jsonFieldProjection(document string, keys []string, arrays []string) string {
+	pairs := []string{}
+	for _, key := range keys {
+		literal := "'" + strings.ReplaceAll(key, "'", "''") + "'"
+		pairs = append(pairs, literal, "CASE WHEN jsonb_typeof("+document+"->"+literal+") IN ('string','number','boolean') THEN "+document+"->"+literal+" END")
 	}
-	columns := []string{}
-	seen := map[string]bool{}
-	for _, name := range q.Fields {
-		expr, ok := dataFields[name]
-		if !ok || seen[name] {
-			return result, f.Fail("PERMISSION_DENIED", "field is not authorized")
-		}
-		seen[name] = true
-		columns = append(columns, expr+" AS "+pgx.Identifier{name}.Sanitize())
+	for _, key := range arrays {
+		literal := "'" + strings.ReplaceAll(key, "'", "''") + "'"
+		expr := document + "->" + literal
+		pairs = append(pairs, literal, "CASE WHEN jsonb_typeof("+expr+")='array' THEN CASE WHEN NOT EXISTS (SELECT 1 FROM jsonb_array_elements("+expr+") p(value) WHERE jsonb_typeof(p.value) NOT IN ('string','number','boolean')) THEN "+expr+" END END")
 	}
-	args := []any{s.OwnerID}
-	where := []string{"r.user_id=$1", "c.enabled", "c.state='active'", "NOT u.disabled"}
-	for _, filter := range q.Filters {
-		expr, ok := dataFields[filter.Field]
-		if !ok {
-			return result, f.Fail("PERMISSION_DENIED", "filter field is not authorized")
+	// PostgreSQL limits function calls to 100 arguments. Keep projections
+	// extensible by combining small objects instead of one oversized call.
+	objects := []string{}
+	for start := 0; start < len(pairs); start += 80 {
+		end := start + 80
+		if end > len(pairs) {
+			end = len(pairs)
 		}
-		operator := map[string]string{"eq": "=", "ne": "<>", "lt": "<", "lte": "<=", "gt": ">", "gte": ">="}[filter.Operator]
-		value, ok := filter.Value.(string)
-		if !ok || len(value) > 4096 {
-			return result, f.Fail("INVALID_ARGUMENT", "dataset filters require bounded string values")
-		}
-		args = append(args, value)
-		parameter := fmt.Sprintf("$%d", len(args))
-		if filter.Operator == "contains" {
-			where = append(where, "strpos("+expr+","+parameter+")>0")
-		} else if operator != "" {
-			where = append(where, expr+operator+parameter)
-		} else {
-			return result, f.Fail("INVALID_ARGUMENT", "unsupported filter operator")
+		objects = append(objects, "jsonb_build_object("+strings.Join(pairs[start:end], ",")+")")
+	}
+	if len(objects) == 0 {
+		return "'{}'::text"
+	}
+	return "jsonb_strip_nulls(" + strings.Join(objects, " || ") + ")::text"
+}
+
+var safeSourceMetadataKeys = []string{
+	"body_status", "body_reason", "coverage", "node_id", "parent_node_id", "order", "task_point_total", "task_point_remaining", "task_point_completed", "personal_status",
+	"answer_time_raw", "answer_time_source", "question_count", "full_score", "header_status", "start_at", "end_at", "deadline_raw", "deadline_source", "deadline_reason", "deadline_status",
+	"published_at_raw", "published_at_source", "updated_at_raw", "updated_at_source", "start_time_raw", "end_time_raw", "start_reason", "end_reason", "classification_status", "unit_type", "task_type",
+	"reply_count", "discussion_count", "current_user_status", "source_status", "source_inconsistent", "time_raw", "time_precision", "time_semantics", "time_reason",
+	"start_at_raw", "start_at_source", "end_at_raw", "end_at_source", "question_count_source", "full_score_source", "header_coverage",
+	"topic_id", "participation_status", "is_current_user", "participation_coverage", "discussion_record_type", "root_discussion_id", "replyId", "postId", "current_user_identity_coverage", "current_user_participation_coverage",
+	"reply_page", "reply_coverage", "reply_pages_read", "reply_count_observed", "reply_total_count", "reply_total_pages", "reply_snapshot_changed", "reply_truncated", "comment_coverage", "source_detail_endpoint",
+}
+
+var safeProgressMetadataKeys = []string{"submitStatus", "userSubmitStatus", "userEffectStatus", "finishStatus", "studentScore", "userScore", "finalMark", "usedTryCount", "finished", "learned", "learnStatus", "progress", "completePercent", "learnTime", "learnCount", "totalLearnedTime", "replyCount", "voteCount", "viewStatus"}
+var safeAssessmentTimeKeys = []string{"releaseTime", "startTime", "examStartTime", "endTime", "deadline", "submitEndTime", "examEndTime", "testEndTime", "homeworkEndTime", "jobDeadline", "closeTime", "evaluateStart", "evaluateEnd", "evaluationEndTime", "evaluateScoreReleaseTime", "scoreReleaseTime"}
+
+func safeMetadataProjection(document string) string {
+	base := "(" + jsonFieldProjection(document, safeSourceMetadataKeys, []string{"path_ids"}) + ")::jsonb"
+	objects := []string{base}
+	for _, key := range []string{"native_progress_fields", "current_user_participation_fields"} {
+		projection := jsonFieldProjection("("+document+"->'"+key+"')", safeProgressMetadataKeys, nil)
+		objects = append(objects, "jsonb_build_object('"+key+"',("+projection+")::jsonb)")
+	}
+	// The current-user presence flags are booleans, never a roster object.
+	current := []string{}
+	for _, key := range []string{"hasFollowed", "hasVoteUp", "hasVoteDown"} {
+		expr := "(" + document + "->'current_user_state'->'" + key + "')"
+		current = append(current, "'"+key+"'", "CASE WHEN jsonb_typeof("+expr+")='boolean' THEN "+expr+" END")
+	}
+	objects = append(objects, "jsonb_build_object('current_user_state',jsonb_strip_nulls(jsonb_build_object("+strings.Join(current, ",")+")))")
+	timePairs := []string{}
+	for _, outer := range []string{"node", "test"} {
+		projection := jsonFieldProjection("("+document+"->'assessment_time_fields'->'"+outer+"')", safeAssessmentTimeKeys, nil)
+		timePairs = append(timePairs, "'"+outer+"'", "("+projection+")::jsonb")
+	}
+	objects = append(objects, "jsonb_build_object('assessment_time_fields',jsonb_build_object("+strings.Join(timePairs, ",")+"))")
+	return "(" + strings.Join(objects, " || ") + ")::text"
+}
+
+func init() {
+	for _, name := range dataFieldOrder {
+		if _, exists := dataFields[name]; !exists && name != "metadata" {
+			dataFields[name] = sourceFields(name)
 		}
 	}
-	args = append(args, q.Limit, q.Offset)
-	sql := `SELECT ` + strings.Join(columns, ",") + ` FROM platform_records r JOIN platform_connections c ON c.user_id=r.user_id AND c.id=r.connection_id JOIN users u ON u.id=r.user_id WHERE ` + strings.Join(where, " AND ") + fmt.Sprintf(" ORDER BY r.id LIMIT $%d OFFSET $%d", len(args)-1, len(args))
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	result.Rows = []map[string]any{}
-	err = agentError(r.db.transaction(ctx, func(tx pgx.Tx) error {
-		if _, e := tx.Exec(ctx, `SET TRANSACTION READ ONLY`); e != nil {
-			return agentError(e)
-		}
-		if _, e := tx.Exec(ctx, `SET LOCAL statement_timeout='5s'`); e != nil {
-			return agentError(e)
-		}
-		rows, e := tx.Query(ctx, sql, args...)
-		if e != nil {
-			return agentError(e)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			values, e := rows.Values()
-			if e != nil {
-				return agentError(e)
-			}
-			row := map[string]any{}
-			for i, name := range q.Fields {
-				row[name] = values[i]
-			}
-			result.Rows = append(result.Rows, row)
-		}
-		return agentError(rows.Err())
-	}))
-	return
+	dataFields["metadata"] = safeMetadataProjection("(r.content->'fields')")
 }

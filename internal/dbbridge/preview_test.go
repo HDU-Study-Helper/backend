@@ -51,6 +51,17 @@ func TestPostgresPreviewStatusAndOwner(t *testing.T) {
 	if r.LastSuccessAt == nil || r.LastErrorCode != "parse_failed" || r.LastPageCount != nil {
 		t.Fatal("failed attempt concealed or success lost")
 	}
+
+	must(t, observer.StartSync(ctx, lease, "course"))
+	must(t, observer.FinishSync(ctx, lease, "course", "verification_required", 2, 0, false))
+	must(t, repo.Fail(ctx, lease, "verification_required"))
+	connection, e := repo.Get(ctx, scope)
+	must(t, e)
+	overview, e = db.Preview().Overview(ctx, owner.ID)
+	must(t, e)
+	if connection.ErrorCode != "verification_required" || connection.State != "active" || overview[0].Resources[0].LastErrorCode != "verification_required" || overview[0].Resources[0].LastSuccessAt == nil {
+		t.Fatal("verification cause lost or login incorrectly expired")
+	}
 	foreign, e := db.Preview().Overview(ctx, other.ID)
 	must(t, e)
 	if len(foreign) != 0 {
