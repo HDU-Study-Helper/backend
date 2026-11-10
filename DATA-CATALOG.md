@@ -1,6 +1,6 @@
 # 数据库结构与可采集数据字典
 
-本文汇总当前后端已实现的数据结构、平台字段、关联方式和读取入口，供后端、前端及后续 Agent 开发使用。基线为数据库迁移 v1–v4；与后续目标草案 `DATA-MODELS.md` 不同，本文描述当前代码。修改迁移、适配器输出或查询接口时应同步更新本文。
+本文汇总当前后端已实现的数据结构、平台字段、关联方式和读取入口，供后端、前端及后续 Agent 开发使用。当前迁移至v15；原始采集表基线为v1–v4；与后续目标草案 `DATA-MODELS.md` 不同，本文描述当前代码。修改迁移、适配器输出或查询接口时应同步更新本文。
 
 依据：`internal/dbbridge/{migrate,platform,preview}.go`、`internal/model/`、`internal/contract/platform.go`、各平台适配器及 README。本文不包含真实账号、Cookie、Token、二维码票据或私人业务数据；示例均为虚构。
 
@@ -156,7 +156,7 @@ dws_attachments
 platform_connections
   user_id          text          FK users.id
   id               text
-  source           text          CHECK chaoxing / mooc / ucampus
+  source           text          CHECK chaoxing / mooc / ucampus / jwxt（v7）
   state            text          DEFAULT pending
   enabled          boolean       DEFAULT true
   session          bytea         加密Cookie/Token/平台状态；DEFAULT空；最多2MiB
@@ -253,11 +253,13 @@ dbbridge_migrations
 
 注意：当前中央层计算内容哈希前，会将 `content.observed_at` 清为 Go 零时间，避免观察时间变化导致无意义更新；**真实观察时间以外层 `observed_at` 为准**。这是当前序列化格式，不把零时间解释成来源发布时间。
 
+`internal/platform/service_test.go` 的 `TestSyncObservationTimestampDoesNotChangeRecord` 覆盖学习通、MOOC、U校园：仅采集时间（含纳秒）变化时身份、内容和哈希不变；来源业务时间更正仍改变哈希，身份保持不变。同名课程、通知或考试可能具有不同来源 ID，不能仅按标题合并。
+
 Record 字段：
 
 | 字段 | 类型 | 含义 |
 |---|---|---|
-| kind | string | course / assignment / exam / progress / notice / discussion / discussion_reply_user / material |
+| kind | string | course / schedule / assignment / exam / progress / notice / discussion / discussion_reply_user / material |
 | external_id | string | 资源在父范围内的原生/复合ID |
 | parent_id | string，可省略 | 原生父范围，未知不推断 |
 | title | string，可省略 | 来源标题 |
@@ -347,6 +349,19 @@ assignment/progress使用同一受控leaf投影，字段不保证都是独立作
 
 验证范围：匿名二维码创建与WebSocket握手真实通过；用户反馈U校园可用。不能据此声称教材任务/进度、正式考试或通知已完整验证。
 
+### 4.3.1 杭电教务（jwxt，手动采集）
+
+本实现依据调研协议，仅离线 fixture 验证，未实际访问教务。登录账号和完整 Cookie 会话由中心按 user+connection 加密保存于 platform_connections.session；密码不存，业务记录无 Cookie/票据/完整学生资料。教务不参与 Targets 定时采集；无自动重登录或探活。
+
+| kind | 当前输出 | fields |
+|---|---|---|
+| course | 指定学年/学期的已选课程 | academic_year、term、entry_type=course、course_id、class_id，及有值的 class_name、credits_raw、course_category/category、teacher_raw/teacher_name、location_raw、schedule_raw 等白名单 |
+| schedule | 普通课表安排与实践安排 | 普通项 academic_year、term、entry_type=class_session、weekday（1–7）、periods_raw、weeks_raw、identity_source=schedule_text_hash，以及有值的 course_id/class_id、teacher、location、campus、credits_raw 等；实践 entry_type=practice、identity_source=practice_text_hash，title为原文 |
+
+两类 ParentID 为 `[学年起始年份,学期]`；course 的 ExternalID 为 `[course_id,class_id]`，schedule 为安排原文哈希。来源哈希在时间/地点变化时可能变化；中心完整课表同步会清理本连接该学期已消失的课表归档并刷新TIMETABLE日程。不得将节次原文直接当作钟点。Adapter每页100项，最多5000项、响应4MiB、游标1MiB；course逐页保存加密checkpoint，schedule在单次手动请求收齐完整快照再事务提交。未知分页包装/坏记录失败，不返回可提交部分结果。
+
+POST `/api/v1/platforms/jwxt/login` body `{username,password}`；POST 连接 `/sync` body `{resource:"course",academic_year:2026,term:1}`；课表 resource=schedule 还必须提供 calendar（首周周一日期及节次起止时间）；GET 连接 `/records?resource=...` 或统一 preview 查询已归档。学年起始年份2000–2100，学期1/2；抓取状态按资源显示最近一次手动采集，checkpoint独立按学期保存。完整字段和已知限制见 [教务说明](internal/jwxt/README.md)。
+
 ### 4.4 钉钉（dws）
 
 消息 content 是以下 Observation JSON，保持官方字段名：
@@ -421,6 +436,70 @@ payload仅包含用户/连接/来源/资源/记录等安全引用、操作、发
 
 ## Agent Framework 表（迁移 v5）
 
-通用框架新增五表：`agent_instances`（实例配置/owner/status）、`agent_memories`（owner+agent 私有记忆）、`agent_workflows`（owner 私有定义及单父级）、`agent_workflow_versions`（完整版本快照）、`agent_runs`（父子关系/状态/预算使用/安全错误）。完整 DDL 位于 [agent_schema.go](internal/dbbridge/agent_schema.go)，字段与迁移说明见 [框架文档](../agent/framework/README.md)。
+通用框架使用以下表：`agent_instances`（实例配置/owner/status）、`memories`（V9：用户 PUB、Agent PRI、Workflow PRI；旧 agent_memories 作为迁移存档保留）及 `memory_relations`（同用户直接关联）、`agent_workflows`（owner 私有定义及单父级）、`agent_workflow_versions`（完整版本快照）、`agent_runs`（父子关系/状态/预算使用/安全错误）。完整 DDL 位于 [agent_schema.go](internal/dbbridge/agent_schema.go)，字段与迁移说明见 [框架文档](../agent/framework/README.md)。
 
-框架 Data Query 默认仅开放 `platform_records` 的 id/connection_id/source/kind/external_id/parent_id/title/text 投影，受 owner 和 active 连接约束；新建的 Agent 私有表、原始 content 和凭据均不进入通用数据集目录。
+框架 Data Query 仅开放 `platform_records` 的白名单投影，受 owner、enabled 及 active 连接约束；新建的 Agent 私有表、完整 `content` / `fields` 对象和凭据均不进入通用数据集目录。基础字段保留 id/connection_id/source/kind/external_id/parent_id/title/text；`text` 优先读取记录正文 `content`，兼容旧 `text`。
+
+业务字段均以 `string` 返回，缺失或不合类型为空字符串，源数字与布尔值仅转文本，不转换时区、epoch单位或业务含义：
+
+| 投影字段 | 来源与语义 |
+|---|---|
+| course_id / class_id / term_id | fields的snake_case优先，兼容MOOC courseId/classId/termId；不猜跨源课程关系 |
+| course_name | 显式course_name/courseName；只有course资源可回退该记录title，任务标题不充当课程名 |
+| task_type | 原始task_type |
+| status / source_status | 同一兼容别名：status → statusText → statusName → submission_status → submitStatus → finishStatus → learnStatus，保留第一个明确源值，不统一解释完成状态 |
+| submission_status / availability_status / finish_status / learn_status | 原始submission_status或submitStatus、availability_status、finishStatus、learnStatus，分别保留，不能相互推断 |
+| progress / completed / total | 原始progress/任务点完成数/总数，不生成百分比 |
+| deadline | deadline → submitEndTime → homeworkEndTime → examEndTime → testEndTime → jobDeadline；不以通用endTime、closeTime、U校园可用期结束冒充截止 |
+| start_time / end_time | 原始start_time/startTime/examStartTime/start_time_raw或end_time/endTime/closeTime/end_time_raw；U校园回退strategies.start_time/end_time，仅代表来源的起止/可用期 |
+| published_at | 仅明确published_at/publish_time/publishTime/releaseTime；不使用观察、创建或开放时间补齐 |
+| source_time / time_raw | source_time依次读time_raw/createTime/sendTime/insertTime，含义由source/kind决定；time_raw原样，考试时间区间与资料时间文案不解析为日程 |
+| file_type / size_raw / is_folder / path | 资料目录的明确源值；path仅接受字符串数组并返回JSON文本，嵌套对象不暴露 |
+
+全部共32个字段，可按需选择；筛选值仍为字符串。即使已取得截止日期或原始epoch，也不能据此猜测日程起止时间、学期或教学周。字段是增量兼容扩展，无数据库迁移；跨来源的状态代码和时间格式没有统一化。独立PostgreSQL回归位于 `internal/dbbridge/agent_data_fields_test.go`，默认未设置专用 `TEST_DATABASE_URL` 时明确跳过集成用例。
+
+### Agent 管理配置（迁移 v6）
+
+`agent_framework_settings`：id（固定 1）、encrypted_settings（credential.Vault AES-GCM 密文，最多 1 MiB）、version（正整数并发控制）、updated_at。模型与 Search 的完整配置均加密，API Key 不存入普通 JSON 或通用数据集；仅管理后台服务可解密。`agent_runs` 原有 record JSONB 继续作为管理页的运行历史，按 owner/agent 查询最近记录。
+
+## 教学周日程（v8）
+
+新增唯一一张 schedules：id(text PK)、user_id(FK users)、academic_year(int)、term(int)、teaching_week(int)、start_time/end_time(timestamptz分钟精度)、title/details(text)、source(TIMETABLE/USER/AGENT)、event_status(INCOMPLETE/COMPLETED)、mod(JSONB)、series_key/origin_key(text)、active(bool)、created_at/updated_at。time_status不持久化，查询按当前时间计算。复合索引user_id+academic_year+term+teaching_week；时间范围索引user_id+start_time+end_time；TIMETABLE来源身份在用户/学期内唯一。
+
+课表手动同步使用完整快照事务刷新TIMETABLE；取消安排保留inactive行与mod历史，列表只返回active，按ID可追溯。USER/AGENT不受替换。完整字段规则、API、日程身份及修改冲突政策见internal/schedule/README.md。
+
+Memory V0.2 的完整结构、迁移和权限矩阵见 [Memory V0.2](../agent/framework/MEMORY-V0.2.md)。该系统不合并采集记录或日程数据。
+
+课表派生日程的mod还保存weeks_raw、teaching_weeks、week_pattern（ODD/EVEN/ALL）作为来源周次规则。永久修改及未来周继承同时按series_key和单双周模式隔离；界面显示原始教学周规则，单双周按教学周编号判定。
+
+## 结构化学业检索（v12–v13，2026-11-08）
+
+前述 platform_records 为兼容原始归档路径；学习通/MOOC 另增加可重建的结构化层，不改变原生身份、账号授权和原始证据。
+
+- `courses`：按用户、连接、来源、原生课程ID隔离的课程目录。
+- `academic_offerings`：明确开课实例；学习通为课程＋教学班，MOOC 为课程＋期次；保留 opaque course_ref、名称、教师、学校、SPOC源期次关系和覆盖状态；v13补充课程简介与白名单课程要求/教师团队字段；仅保存来源实际提供的内容，并保留简介来源课程和覆盖状态。不同教学班、期次及同名课程不自动合并。
+- `academic_items`：章节、课时、资料、作业、考试、讨论、通知与课程观察，显式 offering_id 外键；无法确认课程的账号级通知/考试可为空。包含正文、作者、目录路径、原生层级ID、标准状态和各类独立时间字段。
+- `academic_item_personal_states`：尝试、提交、评分、互评、任务点、最后访问等源状态，与事项内容分开；不以尝试数或最后访问推断完成。
+- `academic_item_evidence`：事项到原始记录的外键映射；同一任务的 assignment/progress 可合并为一条事项并保留多个证据ID。历史MOOC unit6被归考试的观察在结构化层纠正为讨论，原证据保留。
+
+所有关联使用 user_id＋connection_id 复合外键，检索核验连接 active/enabled 与用户有效性。索引覆盖课程/类型、状态、发布时间、截止时间和文本；时间范围在 timestamptz 上比较，不再对毫秒数字或格式不一的字符串排序。
+
+时间对象保存 value/date/raw/precision/source_field/state。完整日期时间可规范为UTC；仅日期保存 date，不捏造午夜；缺年份或相对倒计时保留部分精度且不参与瞬间范围查询。发布时间、更新时间、开始、结束、截止分开，资料列表时间未核实语义时仅保留元数据。
+
+Agent 新增 `academic_offerings`、`academic_items` 数据集，使用既有 data_query，最多32个字段/查询；旧 platform_records 数据集继续作为原始证据。新目录与结构化筛选接口为 `/api/v1/academic/{offerings,items,tree}`，检查页 `/admin/academic`；tree?format=text 返回目录文本。完整树超过20000条明确失败，不能静默截断。
+
+采集每页原始记录、结构化更新、检查点同事务提交；`go run ./cmd/academic-maintain rebuild` 可从原始归档重建，`export` 导出真实目录JSON/文本；`go run ./cmd/academic-refresh` 只补采学习通/MOOC，不启动Agent或DWS。生产操作前保留一致性备份。详见 [存储说明](internal/dbbridge/academic_storage.md) 与 [检查API](internal/academic/README.md)。
+
+## 课程采集黑名单（v14）
+
+`collection_policies` 保存每个用户的版本号和更新时间；`collection_exclusions` 保存按用户、连接、来源及原生 course_ref 精确匹配的停采规则，以及课程名称、教学班/期次、offering_id 展示快照。规则不依赖可重建目录的外键，课程目录暂时缺失或连接停用时仍可显示和移除。新选择必须来自当前用户有效连接的已有开课实例。
+
+后台 `/admin/academic#collection-policy` 可勾选已有课程、筛选、保存或清空选择；API `GET/PUT /api/v1/academic/collection-policy` 使用版本控制和CSRF保护。PUT整体替换，参数为 `{version,offering_ids}`，最多2000项；冲突返回409。
+
+采集每页前重新加载策略，学习通在课程请求前跳过、清理该课分页；MOOC按所属路由期次跳过，包括引用源期次和待取正文队列。数据库提交事务再检查最新黑名单，防止保存策略时已经发出的请求写入原始记录、投影和变化事件。历史归档保留，解除后按后续正常扫描继续。共享课程发现列表及没有明确课程标识的账号级通知/考试仍读取；不凭同名或来源期次推断黑名单归属。
+
+## 按课程生成Trigger批次（v15）
+
+`control_batches.batch_scope` 为可空JSONB，保存新批次的课程范围 `{kind,connection_id,offering_id?,course_ref?,course_name?}`。已有历史批次保持NULL及原始内容。学习通、MOOC在每轮刷新结束后按用户＋平台＋连接＋确认的所属课程引用聚合，不按资源、同名或SPOC内容源期次合并。无可靠归属的信息按连接单列。DWS、U校园及其他来源仍按旧平台批次处理。
+
+同课程的一轮全部变化只封成一批；不以100条或全局5000事件查询上限拆散。课程原始事件总量超过700KiB则保留全部证据并封成blocked/COURSE_INPUT_TOO_LARGE，不截断。Trigger课程输入可达768KiB、上下文至少1MiB。未归属和旧平台批次仍采用100条／44000字节边界。封批事务及advisory lock保证重复调用和并发调用不重复分配事件；课程归属使用冻结的after/before和当前结构化证据核对，冲突保守归入未关联。后台显示课程范围，Filter仍逐项处理Trigger选中的变化。

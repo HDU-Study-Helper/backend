@@ -2,7 +2,7 @@
 
 状态：按用户最新任务实现可运行 v0.1 模块化单体。已包含 dbbridge Repository/迁移、users/会话/管理页、dws 官方 CLI 封装/受控轮询/归档、bridge 进程内 Demo；实际范围与验证见 README。三个学习平台Adapter、统一platform采集与preview预览也已实现；下面Handle、Agent等完整架构仍是后续目标，不能视为均已实现。
 
-当前运行依赖：`cmd/api → app → users / platform / dws / preview / bridge`；业务服务通过 `model` 的Repository接口调用 `dbbridge → PostgreSQL`。`platform → contract.Adapter → chaoxing / mooc / ucampus`，`dws → credential + 官方CLI`；学习平台会话/游标也由credential加密。只有dbbridge执行SQL。app管理依赖及HTTP/Worker生命周期，main不承载业务逻辑。通用contract.Adapter已用于三个学习平台；DWS仍保留专用服务和路由，handle 当前无 Go 实现；通用 Agent Framework 已在 `../agent/framework` 实现，由 `internal/agent` 适配 Bridge，尚未装配到 HTTP App，详见其 README。完整目录说明见 `internal/README.md`。
+当前运行依赖：`cmd/api → app → users / platform / dws / preview / bridge`；业务服务通过 `model` 的Repository接口调用 `dbbridge → PostgreSQL`。`platform → contract.Adapter → chaoxing / mooc / ucampus / jwxt`，`dws → credential + 官方CLI`；学习平台会话/游标也由credential加密。只有dbbridge执行SQL。app管理依赖及HTTP/Worker生命周期，main不承载业务逻辑。通用contract.Adapter已用于三个学习平台及杭电教务（仅手动采集）；DWS仍保留专用服务和路由，handle 当前无 Go 实现；通用 Agent Framework 已在 `../agent/framework` 实现，由 `internal/agent` 适配 Bridge，已由 App 装配，临时管理 HTTP 在 internal/agentadmin，详见其 README。完整目录说明见 `internal/README.md`。
 
 ## 1. 分层与依赖
 
@@ -22,7 +22,7 @@ Android / HTTP API → handle.Service ← Worker
 
 目录同级不等于相互依赖。平台包只依赖共享 `contract`、受限 `credential` 和各自客户端。通用 Agent Framework 依赖自己的接口契约，`internal/agent` 适配进程内 Bridge；Agent 不导入平台实现、凭据、SQL 或 shell。`handle` 可以导入 `agent` 和 `contract`，通过依赖注入调用平台接口。工具网关在后续基础设施包实现并由启动入口组装，不能让 agent 与 handle 循环导入。
 
-`cmd/api` 调用 app.LoadConfig/New/Run，app 显式打开 dbbridge、执行版本化迁移、构造用户服务、可选 DWS 服务与 bridge Demo。当前 DWS Worker 在同一进程内显式启动，停止时取消并等待；不创建独立 worker 二进制。数据库驱动 pgx v5；SQL 集中于 dbbridge，当前无需引入 sqlc。DWS jobs 持久化在 PostgreSQL，内存 channel 仅唤醒执行，重启可恢复 pending；不构建完整消息总线、通知或 Agent。
+`cmd/api` 调用 app.LoadConfig/New/Run，app 显式打开 dbbridge、执行版本化迁移、构造用户服务、可选 DWS 服务与 bridge Demo。当前 DWS Worker 在同一进程内显式启动，停止时取消并等待；不创建独立 worker 二进制。数据库驱动 pgx v5；SQL 集中于 dbbridge，当前无需引入 sqlc。DWS jobs 持久化在 PostgreSQL，内存 channel 仅唤醒执行，重启可恢复 pending；不构建完整消息总线或通知投递系统；通用 Agent 由 App 装配，管理入口见下文。
 
 ## 2. 两种数据路径
 
@@ -74,4 +74,14 @@ Android / HTTP API → handle.Service ← Worker
 
 ## 通用 Agent Framework 第一阶段
 
-当前已提供可注入的 Runtime、工具注册与权限、私有记忆、OpenAI 兼容模型适配、DeepSeek Search/Fetch 适配、Workflow 定义版本和运行记录。`internal/agent.Service` 实现 `bridge.Port`，A → 工具 → Bridge → Runtime → B；只由现有 dbbridge 执行 SQL。新增 v5 为框架表，不改变现有采集路径。通知通过 Bridge 请求后端独立 NotificationService，未实现时明确报错。没有提前实现 Filter/Worker/Learner、业务事件触发、Workflow 执行引擎或 HTTP 路由。架构、边界和验证详见 [框架说明](../agent/framework/README.md)。
+当前已提供可注入的 Runtime、工具注册与权限、私有记忆、OpenAI 兼容模型适配、DeepSeek Search/Fetch 适配、Workflow 定义版本和运行记录。`internal/agent.Service` 实现 `bridge.Port`，A → 工具 → Bridge → Runtime → B；只由现有 dbbridge 执行 SQL。新增 v5 为框架表，不改变现有采集路径。通知通过 Bridge 请求后端独立 NotificationService，未实现时明确报错。没有提前实现 Filter/Worker/Learner、业务事件触发、Workflow 执行引擎；新增管理页面及其 HTTP 路由由 agentadmin 承担，框架核心不依赖 HTTP。架构、边界和验证详见 [框架说明](../agent/framework/README.md)。
+
+临时 Agent 控制台：`App → agentadmin → agent.Service → framework.Runtime`。配置保存通过 dbbridge v6 加密单行表，动态 ProviderResolver 让后续 Run 使用最新配置；管理 API 复用 users 的认证/CSRF 并额外要求管理员。自动业务触发仍未接入，手动运行之外没有新增 Agent 轮询任务。
+
+## 杭电教务接入补充
+
+app 现注册 jwxt contract.Adapter，并由 platform 通过可选 PasswordLogin/AcademicTermReader 执行一次账号密码登录和按学期手动同步。登录后的 Cookie 会话用既有 Vault 加密存库；密码不保存。jwxt 的 Descriptor 标记 ManualSyncOnly，Repository.Targets 和 Worker 均排除自动采集。新迁移v7仅扩充平台来源约束，不改已有表的身份键；course/schedule 按学期 ParentID 保存，checkpoint 按 resource:year:term 隔离。后台提供登录及学期手动获取控件，preview 可读取归档。教务协议仅离线fixture，真实教务未验收；日程中心接线已做隔离PostgreSQL验收。
+
+## 教学周日程接线
+
+新增v8仅创建schedules；schedule通过model.ScheduleRepository调用dbbridge，HTTP挂载现有用户/CSRF中间件，并实现现有bridge.Port。教务手动课表请求由platform.SyncTimetable收齐完整快照，使用请求提供的首周周一/节次作息展开，dbbridge在原连接租约保护的同一提交事务中更新课表归档及该用户该学期TIMETABLE日程；USER/AGENT不参与刷新。mod保存基础安排、字段覆盖及修改历史，临时覆盖只落选定教学周。无新增轮询、Agent机制或数据库访问架构，详见internal/schedule/README.md。

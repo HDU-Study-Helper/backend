@@ -1,6 +1,6 @@
 # HDU-Study-Helper Backend v0.1
 
-Go 1.24 + chi + PostgreSQL 模块化单体。产品范围见 `../PROJECT.md`；本版实现用户管理、DWS，以及学习通/MOOC/U校园适配器和中央采集存储，另提供可显式装配的通用 Agent Framework，尚未接入现有 HTTP App；具体业务 Agent 和真实主动通知渠道仍未实现。复用 chi、pgx、bcrypt；使用 x/net/html 用于 HTML 解析、coder/websocket 用于 U校园官方 SSO、go-qrcode 用于扫码 URI 渲染。
+Go 1.24 + chi + PostgreSQL 模块化单体。产品范围见 `../PROJECT.md`；本版实现用户管理、DWS，以及学习通/MOOC/U校园适配器和中央采集存储，另提供随 App 初始化的通用 Agent Framework 和临时 Agent 管理后台；具体业务 Agent 和真实主动通知渠道仍未实现。复用 chi、pgx、bcrypt；使用 x/net/html 用于 HTML 解析、coder/websocket 用于 U校园官方 SSO、go-qrcode 用于扫码 URI 渲染。
 
 `internal` 各目录职责、实现状态、依赖和修改入口见 [internal/README.md](internal/README.md)。
 
@@ -13,8 +13,8 @@ Go 1.24 + chi + PostgreSQL 模块化单体。产品范围见 `../PROJECT.md`；�
 | db-bridge (`internal/dbbridge`) | 集中连接、参数化 SQL、事务迁移账本、User/DWS Repository；租约 fencing、业务最新状态增量upsert与原子水位提交 | 真实独立 PostgreSQL 集成测试，包括回滚、重试去重、跨用户拒绝、撤权及旧任务不能提交 |
 | 用户管理 (`internal/users`) | 用户增删查改、bcrypt、登录/登出、修改密码、管理员权限、最后管理员保护、会话撤销、CSRF、登录限流、中文 Web 管理页 | 单元测试、race 检查及真实 HTTP+PostgreSQL 冒烟；浏览器视觉和交互尚未人工验证 |
 | DWS (`internal/dws`) | 共享固定官方二进制、每连接 Profile/Token 加密工作区、显式授权群、持久化任务、定时轮询、固定时间窗分页、按对象最新状态去重更新、规则分类、同群上下文、附件读取/归档 | 官方 help/本地 schema/源码和脱敏 fake executor；真实 HTTP 验证连接创建/权限。没有使用真实账号读取，真实群/附件/双账号刷新恢复尚未验证 |
-| Agent Framework (`../agent/framework` + `internal/agent`) | 通用 Runtime、18 个工具、内部 Bridge 调度、私有记忆、Workflow 版本和 v5 迁移 | Mock Provider + 真实临时 PostgreSQL 验收；不含业务 Agent / HTTP 接线；[详细说明](../agent/framework/README.md) |
-| bridge (`internal/bridge`) | v1 请求/响应、进程内 Port 接口、认证 Demo echo | 单元及 HTTP 测试；无消息总线、无 Agent 实现 |
+| Agent Framework (`../agent/framework` + `internal/agent`) | 通用 Runtime、20 个工具、内部 Bridge 调度、Memory V0.2 三种归属/关联、Workflow 版本和 V9 迁移 | Mock Provider + 真实 PostgreSQL 与浏览器验收；含临时管理页，不含业务 Agent；[详细说明](../agent/framework/README.md) |
+| bridge (`internal/bridge`) | v1 请求/响应、进程内 Port 接口、认证 Demo echo | 单元及 HTTP 测试；Agent Port 实现位于 internal/agent，无消息总线 |
 
 DWS 不是全部钉钉能力已验证的承诺；官方调研记录群历史可能受服务端字段映射或上游权限影响。错误会明确返回，不用伪造数据替代。详细范围、协议差异、限制见 `internal/dws/README.md`。
 
@@ -34,7 +34,7 @@ internal/httpkit/        JSON/错误/可信 Actor
 scripts/smoke.py         隔离数据库上的真实 HTTP 冒烟
 ```
 
-依赖方向为 `app → users/dws/bridge → model`，`dbbridge → model + pgx`，`dws → credential + 官方 CLI`。业务模块不直接操作 PostgreSQL。chaoxing/mooc/ucampus 通过 `contract.Adapter` 暴露只读登录与同步端口，`internal/platform` 管理加密凭据、chi API 和轮询，`dbbridge` 独占 SQL。jwxt、handle、完整学业状态和 Message 服务仍未实现；通用 Agent 通过内部 Go 服务显式装配，尚无具体业务 Agent。
+依赖方向为 `app → users/dws/bridge → model`，`dbbridge → model + pgx`，`dws → credential + 官方 CLI`。业务模块不直接操作 PostgreSQL。chaoxing/mooc/ucampus/jwxt 通过 `contract.Adapter` 暴露只读登录与同步端口，`internal/platform` 管理加密凭据、chi API 和轮询，`dbbridge` 独占 SQL。handle、完整学业状态和 Message 服务仍未实现；通用 Agent 通过内部 Go 服务显式装配，尚无具体业务 Agent。
 
 ## 启动
 
@@ -103,8 +103,8 @@ go run ./cmd/api
 
 1. 配置 DWS_BINARY、SHA256 和 CREDENTIAL_KEY 后启动 API。
 2. 当前用户在后台点击 Link to DWS（`POST /api/v1/dws/link`，无需请求体），打开返回的官方设备授权链接。企业 ID、用户 ID 与 Profile 由官方登录结果自动识别，并与加密凭据一起原子保存，无需用户填写。
-3. `PUT /api/v1/dws/connections/{id}/groups` 设置 `{groups:[{id:"openConversationId",name:"授权群"}]}`。空列表不采集任何群；每次替换会使旧租约失效。
-4. 在后台点击 Link to DWS 打开官方设备授权，完成后等待状态变为 authorized；也可由运维使用下面的隔离工作区授权并离线导入。HTTP 不接受服务器目录或用户明文 Token。授权期间先不要替换群列表（替换会失效当前租约）。
+3. 打开 `/admin#dwsGroupsPanel` 的“DWS 采集群配置”，选择已授权连接，点击“读取我的群”，勾选需要采集的群，点击“保存采集群”。群名称和 CID 自动读取，无需手动填写。对应 `PUT /api/v1/dws/connections/{id}/groups`，每次整体替换白名单，最多100群；空列表停止采集但保留归档。读取接口为 `GET /api/v1/dws/connections/{id}/available-groups?cursor=...`，分页返回已加入的群；读取本身不修改白名单。
+4. 连接已授权且修改已保存后，可点击每行“手动试采”，面板跟踪排队、运行、成功或失败；202 仅表示排队。统一计划任务默认每十分钟采集白名单，间隔、暂停及统计在 `/admin/tasks` 管理。授权期间先不要替换群列表（替换会失效当前租约）。也可由运维使用下面的隔离工作区授权并离线导入；HTTP 不接受服务器目录或用户明文 Token。
 
 ```bash
 # 普通服务账号执行；DWS_BINARY 已设为固定绝对路径。
@@ -135,9 +135,19 @@ HTTP 同步入口为 `POST /api/v1/dws/connections/{id}/sync`，body `{group_id}
 
 本版 DWS 使用专用路由而非未来统一 `/connections`；`after` 中心 ID 分页尚未改成签名 cursor，创建/同步尚无通用 Idempotency-Key 重放协议，消息按用户、连接、群和原生ID定位当前对象，相同内容不写入，变化时更新content/content_hash并保留中心ID。没有完整消息总线、通知投递、Agent分析或完整学业状态实现。
 
+## 杭电教务（手动采集）
+
+后台 `/admin` 学习平台区域新增统一认证账号密码登录，成功后将账号和 Cookie 会话通过已有 CREDENTIAL_KEY 加密保存在数据库；密码仅用于本次登录，不保存、不自动重登录。教务默认关闭定时采集，本版提供手动获取，无定时开关：登录后选择学年起始年份/学期，点击“获取课表”或“获取已选课程”，数据进入 platform_records 与已有预览窗口；课表还会自动展开并刷新 schedules。请求失败保留旧记录和 checkpoint；会话过期需重新登录。
+
+- 登录：POST `/api/v1/platforms/jwxt/login`，JSON `{username,password}`，返回201连接信息。
+- 获取：POST `/api/v1/platforms/connections/{id}/sync`；课表请求需 resource=schedule、academic_year、term 及 calendar（首周周一日期和节次起止时间），一次收齐完整快照并事务刷新课表日程；已选课程 resource=course 仍逐页提交。学期1/2映射源端3/12。配置格式见 [日程模块](internal/schedule/README.md)。
+- 查看：GET 同连接 `/records?resource=schedule` 或 `/records?resource=course`；数据预览来源选择“杭电教务（手动采集）”。预览10秒自动刷新仍只读数据库。
+
+**验证范围：教务协议仍仅离线模拟，未访问真实教务或提交真实账号；日程模块已用独立PostgreSQL测试库验证迁移、CRUD和同步回滚。** 迁移v7允许 jwxt 来源，v8新增 schedules，启动时由既有迁移流程执行。课表保留周次/节次原文，不猜具体作息；选课结果接口依据参考实现，杭电兼容性待验收。详见 [jwxt/README](internal/jwxt/README.md)。
+
 ## 学习通 / MOOC / U校园
 
-后台 `/admin` 新增“学习平台连接”：点击平台按钮获取二维码，使用对应官方 App 扫码并确认。仅当前应用用户可读取二维码、连接与记录。二维码与扫码状态属于临时挑战，仅由页面顺序轮询，后台采集 Worker 不抢占待登录连接；U校园依赖活 WebSocket，重启或断开后需重新扫码。成功后凭据与游标使用统一 CREDENTIAL_KEY 加密，后台每分钟对已声明资源读取一页并事务保存；无真实增量的平台采用全量重扫与内容哈希比较，每个对象仅保留最新content/hash；相同内容不写入，变化时原行更新并保留稳定中心ID，A→B→A也会更新。长分页需要多个轮询周期，失败不推进 checkpoint。界面可手动同步一页、查看已归档原始记录。
+后台 `/admin` 新增“学习平台连接”：点击平台按钮获取二维码，使用对应官方 App 扫码并确认。仅当前应用用户可读取二维码、连接与记录。二维码与扫码状态属于临时挑战，仅由页面顺序轮询，后台采集 Worker 不抢占待登录连接；U校园依赖活 WebSocket，重启或断开后需重新扫码。成功后凭据与游标使用统一 CREDENTIAL_KEY 加密，后台启动时扫描已登录连接，此后每轮完成后等待10分钟，对已登录且启用的非教务平台的已声明资源读取一页并事务保存；无真实增量的平台采用全量重扫与内容哈希比较，每个对象仅保留最新content/hash；相同内容不写入，变化时原行更新并保留稳定中心ID，A→B→A也会更新。长分页需要多个轮询周期，失败不推进 checkpoint。界面可手动同步一页、查看已归档原始记录。
 
 | 平台 | 本次实现 | 限制及验证 |
 |---|---|---|
@@ -209,3 +219,30 @@ go test -count=1 -v ./internal/dbbridge
 HTTP 冒烟需要全新可丢弃数据库，会保留测试管理员记录；运行前先编译 bin/api。设置 `SMOKE_DATABASE_URL` 后运行 `python3 scripts/smoke.py`；可选 `SMOKE_DWS_BINARY=/绝对路径/dws` 以验证官方二进制哈希检查与 DWS 路由隔离，不执行真实账号命令。
 
 本次实际通过基础编译/测试/vet、真实 PostgreSQL Repository 集成及 HTTP 冒烟：管理页可服务、登录/用户CRUD/RBAC/CSRF/会话撤销/最后管理员/bridge/DWS跨用户拒绝/优雅退出。真实平台账号、双账号同时刷新、真实附件、浏览器视觉交互尚未验证。
+
+## 单次完整采集实验
+
+先停止正常API进程，加载现有部署环境后运行 `go run ./cmd/collect-once -output ../.build/collection-once-report.json -timeout 30m`。该入口只创建一个刷新轮次，不启动HTTP、周期时钟或Agent处理。已启用且active的学习平台连接逐资源读到 `HasMore=false`，讨论按课程独立续页；每页失败不重试，验证、限流或认证错误停止该连接，已提交页保留。单流最多10000页、总计20000页及30分钟硬上限，预算耗尽标记失败，不声称完整。教务仍只手动、不改日程；回复用户名单等按需资源不扩展采集。DWS复用已有完整窗口轮询。退出前将结果、轮次与待处理批次持久化，报告仅含安全统计；部分失败仍写报告并返回非零退出码。
+
+恢复API时可设置 `REFRESH_PAUSED=true`，从暂停状态启动信息刷新时钟，避免启动立即产生第二轮；页面可显式恢复或手动触发。该变量不影响上述显式单次命令。Agent仍由用户手动启动。
+
+## Agent 临时管理页
+
+访问 `/admin/agents`（主后台有导航），使用现有管理员登录。提供模型/搜索 API 配置、按用户与 Agent 隔离的结构化记忆、智能体创建修改和手动运行。配置密钥使用 `CREDENTIAL_KEY` 加密保存在 v6 配置表，不回显；保存后用于后续运行。`AGENT_DEMO_ENABLED=true` 可启用明确标注的本地自测，无需模型 Key 即可验证真实记忆工具与持久化；默认关闭。详见 [管理后台说明](internal/agentadmin/README.md)。
+
+
+自动刷新时钟：学习通、MOOC、U校园的已登录且启用连接每轮完成后等待10分钟；教务系统仅手动同步。学习平台与 DWS 共用一个信息刷新时钟，部署设置 `REFRESH_INTERVAL=10m`（兼容旧 DWS_POLL_INTERVAL）；DWS 按现有授权群同步。启动时首次扫描与显式手动同步无需等待该间隔。待登录、过期或停用连接不做定时采集。每轮仍沿用现有分页预算，不代表10分钟内必然完成全量刷新；上游失败不会被视作同步成功。
+
+后台新增[计划任务](internal/scheduler/README.md)入口 `/admin/tasks`：管理员可查看共享信息刷新时钟的运行状态、间隔、下次执行与最近结果，暂停/恢复、调整间隔或手动触发一轮。调整仅当前进程有效，重启恢复部署默认；当前不是持久化任务调度系统。
+
+2026-11-04 学习通反爬修复：同课程低频对照确认持久化旧 `k8s` Cookie 回放会触发202验证页。恢复会话时忽略旧票、保存时不持久化该票，仍正常接收服务端新票；加700ms可取消请求间隔，并用 `verification_required`（HTTP429）标识验证页，停止该连接本轮后续资源/课程扫描。无需清空连接或重新登录。详见 [学习通说明](internal/chaoxing/README.md)；真实批量作业/进度已恢复；随后定位并修复通知末页省略 notices、讨论空末页省略 datas 及可选 lastAuxValue 的兼容问题，通知与23门课程讨论批测均通过。加载本地管理员环境后可用 `python3 scripts/chaoxing_regression.py` 观察一轮现有计划任务并批量检查恢复情况，不额外触发上游刷新。
+
+## 教学周日程
+
+已接入一张 schedules 表及 `/api/v1/schedules` CRUD；按 academic_year + term + teaching_week 查询，亦支持时间范围。time_status 动态计算，event_status 独立更新；mod JSONB记录永久/临时修改前后及上游变更。永久修改作用于同一安排的当前及后续教学周，临时修改仅限选定周。手动教务课表同步需显式提供校历/节次作息，完整读取成功后同事务刷新TIMETABLE，不改USER/AGENT。失败保留旧数据；身份无法匹配的本地调整保留历史并在响应报告。完整API示例、Bridge操作、事务链和验证见 [schedule/README](internal/schedule/README.md)。
+
+后台 `/admin#schedulePanel` 现提供教学周日程面板，可查看、新增、编辑、完成、删除及查看修改历史。教务课表同步支持图形化时间表编辑器：设置节数、每节课时与休息时长，统一生成或从任意节次顺延填充，逐节作息无需手写JSON。编辑器草稿在当前页面按连接和学期隔离，刷新页面后清空；接口和存储结构不变。
+
+Memory System V0.2 已接入原 Agent Runtime：V9 迁移、用户 PUB / Agent PRI / Workflow PRI、有效期、L0–L3、直接关联及8个记忆工具。结构、权限和验证见 [Memory V0.2](../agent/framework/MEMORY-V0.2.md)。
+
+计划任务与运行控制：`/admin/tasks` 展示持久化刷新轮次、分平台 Diff、Trigger/Filter 与 Agent/Workflow 运行。当前为手动调试模式，刷新不自动调用模型；点击“启动本轮处理 / 处理此平台”后才进入处理队列。不同 Workflow 可并行，同一用户同一 Workflow 在后端排队串行。接口与恢复语义见 [runcontrol](internal/runcontrol/README.md)。
