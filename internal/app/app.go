@@ -131,7 +131,7 @@ func NewWithTrigger(ctx context.Context, cfg Config, handler trigger.Handler) (*
 		descriptors = ps.Sources()
 	}
 	inspect := preview.New(db.Preview(), descriptors, int(cfg.DWSPollInterval/time.Second))
-	if ds != nil || ps != nil {
+	if !cfg.APIOnly && (ds != nil || ps != nil) {
 		app.refresh = scheduler.New("information-refresh", "信息刷新 · 学习平台与 DWS", cfg.DWSPollInterval)
 		if cfg.RefreshPaused {
 			app.refresh.Update(false, int(cfg.DWSPollInterval/time.Second))
@@ -178,7 +178,7 @@ func (a *App) Run(ctx context.Context) error {
 	defer cancel()
 	var workers chan error
 	workerCount := 0
-	if a.control != nil {
+	if a.control != nil && !a.config.APIOnly {
 		workerCount++
 	}
 	if a.dws != nil {
@@ -193,7 +193,7 @@ func (a *App) Run(ctx context.Context) error {
 	if workerCount > 0 {
 		workers = make(chan error, workerCount)
 	}
-	if a.control != nil {
+	if a.control != nil && !a.config.APIOnly {
 		go func() { workers <- a.control.Run(runCtx) }()
 	}
 	if a.dws != nil {
@@ -238,7 +238,7 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	errs := make(chan error, 1)
 	go func() { errs <- server.Serve(listener) }()
-	slog.Info("API started", "addr", listener.Addr().String(), "dws_enabled", a.dws != nil)
+	slog.Info("API started", "addr", listener.Addr().String(), "dws_enabled", a.dws != nil, "api_only", a.config.APIOnly)
 	var runErr error
 	select {
 	case <-ctx.Done():

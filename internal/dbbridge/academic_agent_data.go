@@ -45,14 +45,15 @@ func academicDatasets() map[string]academicDataset {
 	}
 	items.fields["deadline"] = "a.deadline_at"
 	items.times["deadline"] = true
-	for name, keys := range map[string][]string{"submission_status": {"submitStatus", "submission_status"}, "used_try_count": {"usedTryCount"}, "user_score": {"userScore", "studentScore", "finalMark"}, "total_score": {"totalScore", "fullMark", "totalMark"}, "evaluate_start": {"evaluateStart"}, "evaluate_end": {"evaluateEnd"}, "complete_percent": {"completePercent"}, "learn_time": {"learnTime"}, "last_learn_unit_id": {"lastLearnUnitId"}} {
+	for name, keys := range map[string][]string{"submission_status": {"submitStatus", "submission_status"}, "used_try_count": {"usedTryCount"}, "user_score": {"userScore", "studentScore", "finalMark"}, "total_score": {"totalScore", "fullMark", "totalMark"}, "evaluate_start": {"evaluateStart"}, "evaluate_end": {"evaluateEnd"}, "complete_percent": {"completePercent"}, "learn_time": {"learnTime"}, "last_learn_unit_id": {"lastLearnUnitId"}, "user_submit_status": {"userSubmitStatus"}, "user_effect_status": {"userEffectStatus"}, "total_learned_time": {"totalLearnedTime"}, "reply_count": {"replyCount"}, "vote_count": {"voteCount"}, "view_status": {"viewStatus"}} {
 		expr := []string{}
 		for _, key := range keys {
 			expr = append(expr, "CASE WHEN jsonb_typeof(ps.state->'"+key+"') IN ('string','number','boolean') THEN ps.state->>'"+key+"' END")
 		}
 		items.fields[name] = "COALESCE(" + strings.Join(expr, ",") + ",'')"
+
 	}
-	items.names = append(items.names, "metadata", "answer_time_raw", "answer_time_source", "question_count", "full_score", "header_status", "node_id", "parent_node_id", "task_point_total", "task_point_remaining", "task_point_completed", "personal_status", "topic_id", "is_current_user", "participation_status")
+	items.names = append(items.names, "user_submit_status", "user_effect_status", "total_learned_time", "reply_count", "vote_count", "view_status", "metadata", "answer_time_raw", "answer_time_source", "question_count", "full_score", "header_status", "node_id", "parent_node_id", "task_point_total", "task_point_remaining", "task_point_completed", "personal_status", "topic_id", "is_current_user", "participation_status")
 	items.fields["metadata"] = safeMetadataProjection("a.metadata")
 	for _, name := range []string{"answer_time_raw", "answer_time_source", "question_count", "full_score", "header_status", "node_id", "parent_node_id", "task_point_total", "task_point_remaining", "task_point_completed", "personal_status"} {
 		items.fields[name] = "CASE WHEN jsonb_typeof(a.metadata->'" + name + "') IN ('string','number','boolean') THEN COALESCE(a.metadata->>'" + name + "','') ELSE '' END"

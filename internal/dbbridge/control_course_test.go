@@ -198,16 +198,13 @@ func TestPostgresControlCourseLargeUnitsAndLegacyLimits(t *testing.T) {
 			if len(batches) != 1 || batches[0].Count != count || len(batches[0].Changes) != count || batches[0].Scope.CourseRef != ref {
 				t.Fatalf("course split or lost: count=%d batches=%+v", count, batches)
 			}
-			if count == 101 && batches[0].Status != "pending" {
-				t.Fatal("regular course blocked")
-			}
-			if count >= 5001 && (batches[0].Status != "blocked" || batches[0].Error != "COURSE_INPUT_TOO_LARGE") {
-				t.Fatal("oversized course not blocked", batches[0].Status)
+			if batches[0].Status != "pending" {
+				t.Fatal("course within stored-unit budget blocked despite bounded Trigger paging", batches[0].Status)
 			}
 			n, err := repo.Activate(ctx, round, "", "", false)
 			must(t, err)
-			if count >= 5001 && n != 0 {
-				t.Fatal("blocked unit activated")
+			if n != 1 {
+				t.Fatal("complete course unit did not activate", n)
 			}
 			var items, unassigned int
 			must(t, db.pool.QueryRow(ctx, `SELECT count(*) FROM control_items WHERE batch_id=$1`, batches[0].ID).Scan(&items))
@@ -216,6 +213,15 @@ func TestPostgresControlCourseLargeUnitsAndLegacyLimits(t *testing.T) {
 				t.Fatal("evidence items lost", items, unassigned)
 			}
 		})
+	}
+	oversizedRound, e := repo.StartRound(ctx, "oversized-course")
+	must(t, e)
+	controlCourseEvents(t, db, oversizedRound, u.ID, "mooc", []model.ControlChange{{ConnectionID: conn, Resource: "material", After: academicJSON(map[string]any{"parent_id": ref, "content": strings.Repeat("x", ControlCourseBatchBytes+1)})}})
+	must(t, repo.FinishRound(ctx, oversizedRound, nil, false))
+	must(t, repo.Seal(ctx))
+	oversized := controlCourseBatches(t, db, oversizedRound)
+	if len(oversized) != 1 || oversized[0].Status != "blocked" || oversized[0].Error != "COURSE_INPUT_TOO_LARGE" {
+		t.Fatal("stored-unit overflow must remain blocked", oversized)
 	}
 	round, err := repo.StartRound(ctx, "test")
 	must(t, err)

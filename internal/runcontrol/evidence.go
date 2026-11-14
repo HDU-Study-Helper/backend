@@ -5,7 +5,9 @@ import (
 	"academic/backend/internal/model"
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // validateItemEvidence accepts host-verified course references and verifies other
@@ -22,18 +24,20 @@ func (s *Service) validateItemEvidence(ctx context.Context, owner string, raw js
 	for _, ref := range refs {
 		var text string
 		kind := ""
+		canonicalRecord := false
 		if json.Unmarshal(ref, &text) != nil {
 			var object struct {
-				Kind           string `json:"kind"`
-				Type           string `json:"type"`
-				Value          string `json:"value"`
-				ID             string `json:"id"`
-				RecordID       string `json:"record_id"`
-				ExternalID     string `json:"external_id"`
-				ChangeID       string `json:"change_id"`
-				ConnectionID   string `json:"connection_id"`
-				EventID        string `json:"event_id"`
-				AcademicItemID string `json:"academic_item_id"`
+				Kind               string `json:"kind"`
+				Type               string `json:"type"`
+				Value              string `json:"value"`
+				ID                 string `json:"id"`
+				RecordID           string `json:"record_id"`
+				ExternalID         string `json:"external_id"`
+				ChangeID           string `json:"change_id"`
+				ConnectionID       string `json:"connection_id"`
+				EventID            string `json:"event_id"`
+				AcademicItemID     string `json:"academic_item_id"`
+				AcademicOfferingID string `json:"academic_offering_id"`
 			}
 			if json.Unmarshal(ref, &object) != nil {
 				return false
@@ -41,6 +45,19 @@ func (s *Service) validateItemEvidence(ctx context.Context, owner string, raw js
 			kind = object.Kind
 			if kind == "" {
 				kind = object.Type
+			}
+			if isAcademicOfferingEvidenceKind(kind) || isAcademicOfferingEvidenceKind(object.Type) || object.AcademicOfferingID != "" {
+				text = object.AcademicOfferingID
+				if text == "" {
+					text = object.ID
+				}
+				if text == "" {
+					text = object.Value
+				}
+				if !validAcademicOfferingEvidence(ctx, owner, text, change) {
+					return false
+				}
+				continue
 			}
 			// Academic references use their own identity namespace. Never let a
 			// record_id or a known course ID satisfy a typed academic reference.
@@ -77,15 +94,32 @@ func (s *Service) validateItemEvidence(ctx context.Context, owner string, raw js
 				text = object.EventID
 			}
 		}
-		prefixes := []struct{ Prefix, Kind string }{{"academic_items.id=", "academic_item_id"}, {"academic_item_id=", "academic_item_id"}, {"academic_items.id:", "academic_item_id"}, {"academic_item_id:", "academic_item_id"}, {"platform_records.id=", "record_id"}, {"record_id=", "record_id"}, {"external_id=", "external_id"}, {"connection_id=", "connection_id"}, {"change_id=", "change_id"}, {"record_id:", "record_id"}, {"external_id:", "external_id"}, {"connection_id:", "connection_id"}, {"change_id:", "change_id"}}
+		prefixes := []struct{ Prefix, Kind string }{{"platform_records:", "record_id"}, {"academic_offerings:", "academic_offering_id"}, {"workflow:", "workflow"}, {"academic_items.id=", "academic_item_id"}, {"academic_item_id=", "academic_item_id"}, {"academic_items.id:", "academic_item_id"}, {"academic_item_id:", "academic_item_id"}, {"platform_records.id=", "record_id"}, {"record_id=", "record_id"}, {"external_id=", "external_id"}, {"connection_id=", "connection_id"}, {"change_id=", "change_id"}, {"record_id:", "record_id"}, {"external_id:", "external_id"}, {"connection_id:", "connection_id"}, {"change_id:", "change_id"}}
 		for _, prefix := range prefixes {
 			if strings.HasPrefix(text, prefix.Prefix) {
+				canonicalRecord = prefix.Prefix == "platform_records:"
 				kind = prefix.Kind
 				text = strings.TrimPrefix(text, prefix.Prefix)
 				break
 			}
 		}
 		if text == "" {
+			return false
+		}
+		if isAcademicOfferingEvidenceKind(kind) {
+			if !validAcademicOfferingEvidence(ctx, owner, text, change) {
+				return false
+			}
+			continue
+		}
+		if kind == "workflow" {
+			if !s.validateWorkflowEvidence(ctx, owner, text, change) {
+				return false
+			}
+			continue
+		}
+		// Typed evidence never falls back to another namespace.
+		if kind != "" && kind != "record_id" && kind != "course_record_id" && kind != "external_id" && kind != "connection_id" && kind != "change_id" && kind != "event_id" && !isAcademicEvidenceKind(kind) {
 			return false
 		}
 		if isAcademicEvidenceKind(kind) {
@@ -106,7 +140,10 @@ func (s *Service) validateItemEvidence(ctx context.Context, owner string, raw js
 			}
 			return false
 		}
-		if validEvidence(mustJSON([]string{text}), change) {
+		if !canonicalRecord && (kind == "record_id" || kind == "course_record_id") && text == change.RecordID {
+			continue
+		}
+		if !canonicalRecord && validEvidence(mustJSON([]string{text}), change) {
 			continue
 		}
 		if kind == "" && isAcademicItemID(text) {
@@ -115,7 +152,12 @@ func (s *Service) validateItemEvidence(ctx context.Context, owner string, raw js
 			}
 			continue
 		}
-		if known[text] {
+		// Preserve exact current native IDs, including opaque punctuation, while
+		// rejecting unknown namespaces and query-shaped references.
+		if kind == "" && (strings.HasPrefix(text, "memory:") || strings.HasPrefix(text, "academic_items:") || strings.Contains(text, "course_ref=") && strings.Contains(text, "&kind")) {
+			return false
+		}
+		if !canonicalRecord && known[text] {
 			continue
 		}
 		if s.Data == nil || change.ConnectionID == "" {
@@ -132,6 +174,9 @@ func (s *Service) validateItemEvidence(ctx context.Context, owner string, raw js
 		dataset := "platform_records"
 		projection := []string{"id", "external_id", "connection_id"}
 		filters := []f.Filter{{Field: "connection_id", Operator: "eq", Value: change.ConnectionID}}
+		if canonicalRecord && change.Source == "dws" {
+			return false
+		}
 		if change.Source == "dws" {
 			group := dwsMessageGroup(change)
 			if change.Resource != "message" || group == "" {
@@ -147,7 +192,7 @@ func (s *Service) validateItemEvidence(ctx context.Context, owner string, raw js
 				return false
 			}
 			for _, row := range page.Rows {
-				if row["connection_id"] == change.ConnectionID && (row["id"] == text || row["external_id"] == text) {
+				if row["connection_id"] == change.ConnectionID && row[field] == text {
 					found = true
 					break
 				}
@@ -161,6 +206,42 @@ func (s *Service) validateItemEvidence(ctx context.Context, owner string, raw js
 		}
 	}
 	return true
+}
+
+func isAcademicOfferingEvidenceKind(kind string) bool {
+	return kind == "academic_offerings" || kind == "academic_offering" || kind == "academic_offering_id"
+}
+
+func courseEvidenceMatches(ref courseEvidenceReference, owner string, change model.ControlChange) bool {
+	return owner != "" && ref.OwnerID == owner && ref.ConnectionID != "" && ref.ConnectionID == change.ConnectionID && ref.Source != "" && ref.Source == change.Source && ref.RecordID != "" && ref.RecordID == change.RecordID && ref.CourseRef != ""
+}
+
+func validAcademicOfferingEvidence(ctx context.Context, owner, id string, change model.ControlChange) bool {
+	ref, _ := ctx.Value(knownAcademicOfferingEvidenceKey{}).(academicOfferingEvidenceReference)
+	return isAcademicItemID(id) && ref.ID == id && ref.Course == knownCourseEvidence(ctx) && courseEvidenceMatches(ref.Course, owner, change)
+}
+
+func (s *Service) validateWorkflowEvidence(ctx context.Context, owner, text string, change model.ControlChange) bool {
+	course := knownCourseEvidence(ctx)
+	id, versionText, ok := strings.Cut(text, "@v")
+	version, err := strconv.Atoi(versionText)
+	if !ok || id == "" || strings.ContainsAny(id, "@:=&") || err != nil || version < 1 || strconv.Itoa(version) != versionText || !courseEvidenceMatches(course, owner, change) || s.Agents == nil || s.Agents.Registry.Repository == nil {
+		return false
+	}
+	lookup, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	workflow, err := s.Agents.Registry.Repository.GetWorkflow(lookup, owner, id)
+	if err != nil || workflow.ID != id || workflow.OwnerID != owner || workflow.Status != "active" || workflow.Version != version {
+		return false
+	}
+	var definition struct {
+		Entity struct {
+			Kind string `json:"kind"`
+			ID   string `json:"id"`
+		} `json:"entity"`
+	}
+	entityID := "source=" + course.Source + "|connection=" + course.ConnectionID + "|course_ref=" + course.CourseRef
+	return json.Unmarshal(workflow.Definition, &definition) == nil && definition.Entity.Kind == "course" && definition.Entity.ID == entityID
 }
 
 func isAcademicEvidenceKind(kind string) bool {

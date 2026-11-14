@@ -276,14 +276,23 @@ func TestCatalogRetryRespectsCancellation(t *testing.T) {
 }
 func TestTaskAndProgressReadOnly(t *testing.T) {
 	a := testAdapter(func(r *http.Request) (*http.Response, error) {
-		if !strings.Contains(r.URL.Path, "getLastLearnedMocTermDto") {
-			t.Fatalf("unsafe/unexpected endpoint %s", r.URL.Path)
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
 		}
-		r.ParseForm()
 		if r.Form.Get("termId") != "101" || !strings.Contains(r.Header.Get("Referer"), "tid=101") {
 			t.Fatal("term/referer")
 		}
-		return response(termFixture), nil
+		switch r.URL.Path {
+		case "/web/j/courseBean.getLastLearnedMocTermDto.rpc":
+			return response(termFixture), nil
+		case "/web/j/courseBean.getNewExamList.rpc":
+			return response(`{"code":0,"result":[]}`), nil
+		case "/web/j/mocCourseV2RpcBean.getMemberLearningRate.rpc":
+			return response(`{"code":0,"result":{"termId":101,"lessonLearned":2,"lessonsCount":10}}`), nil
+		default:
+			t.Fatalf("unsafe/unexpected endpoint %s", r.URL.Path)
+			return nil, nil
+		}
 	})
 	s := sessionFor(t, a, scope, "alpha")
 	for _, r := range []contract.Resource{contract.Assignment, contract.Exam, contract.Progress} {
@@ -303,8 +312,17 @@ func TestTaskAndProgressReadOnly(t *testing.T) {
 		if r == contract.Progress {
 			want = 3
 		}
-		if len(p.Records) != want || p.HasMore {
-			t.Fatalf("%s got %d records", r, len(p.Records))
+		if len(p.Records) != want || p.HasMore != (r == contract.Exam || r == contract.Progress) {
+			t.Fatalf("%s got %d records, hasMore=%v", r, len(p.Records), p.HasMore)
+		}
+		if p.HasMore {
+			next, err := a.Sync(context.Background(), scope, p.Session, r, p.NextCursor)
+			if err != nil || next.HasMore {
+				t.Fatal("supplemental read did not finish", r, next, err)
+			}
+			if r == contract.Exam && len(next.Records) != 0 || r == contract.Progress && len(next.Records) != 1 {
+				t.Fatal("unexpected supplemental records", r, next.Records)
+			}
 		}
 		data, _ := json.Marshal(p.Records)
 		for _, secret := range []string{"must not escape", "token=secret", "Cookie", "csrf"} {

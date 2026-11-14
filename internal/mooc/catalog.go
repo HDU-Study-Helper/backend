@@ -26,6 +26,10 @@ func metadata(m, n map[string]any) map[string]any {
 		if v == nil {
 			v = first(n, k)
 		}
+		if original, exists := m[k]; exists && original == nil && (k == "viewStatus" || k == "replyCount") {
+			f[k] = nil
+			continue
+		}
 		if scalar(v) {
 			if s, ok := v.(string); ok && (len(s) > 4096 || strings.Contains(s, "://")) {
 				continue
@@ -53,15 +57,57 @@ func mergeFields(dst, src map[string]any) {
 		dst[k] = v
 	}
 }
+
+// courseMetadata keeps course output bounded and prevents a saved projection
+// from becoming an arbitrary DTO/profile carrier on later cursor pages.
+func courseMetadata(m map[string]any) map[string]any {
+	f := metadata(m, nil)
+	for _, k := range []string{"sourceCourseId", "course_introduction", "body_status", "description_coverage", "description_source_course_id", "requirements", "teachingGoal", "target", "courseLoad", "courseStyle", "courseName", "teachers", "teacher_coverage", "catalog_status", "catalog_chapter_count"} {
+		if v, ok := m[k]; ok {
+			f[k] = v
+		}
+	}
+	return f
+}
+
+// courseSources preserves route and active-source metadata separately. Snapshots
+// contain no nested catalog, raw response, profile or previous snapshots.
+func courseSources(c course, current map[string]any) []any {
+	out := []any{}
+	if rows, ok := c.Metadata["catalog_sources"].([]any); ok {
+		for _, row := range rows {
+			m := object(row)
+			if id := text(m["sourceTermId"]); validID(id) && id != sourceTerm(c) && len(out) < 1 {
+				f := courseMetadata(m)
+				f["sourceTermId"], f["source_scope"] = id, m["source_scope"]
+				out = append(out, f)
+			}
+		}
+	}
+	f := courseMetadata(current)
+	for _, k := range []string{"sourceTermId", "source_scope"} {
+		f[k] = current[k]
+	}
+	out = append(out, f)
+	return out
+}
+
 func courseRecord(c course) contract.Record {
-	f := sourceFields(c)
+	f := courseMetadata(c.Metadata)
+	bodyStatus := f["body_status"]
+	mergeFields(f, sourceFields(c))
+	if bodyStatus != nil {
+		f["body_status"] = bodyStatus
+	}
 	f["school"] = c.School
 	f["source_term_discovery"] = c.Discovery
 	f["notice_coverage"] = "partial: term announcements via verified CourseBean.getAllAnnouncementByTerm; teacher/global announcements excluded"
 	f["material_body_coverage"] = "partial: verified type4 rich text body, type3 PDF metadata; PDF/media bytes excluded"
-	f["discussion_body_coverage"] = "partial: verified type6 root post, detail state and bounded reply pages; nested comments and participant profiles excluded"
+	f["discussion_body_coverage"] = "type6 root requirements and authenticated catalog personal state only"
+	f["discussion_reply_roster_coverage"] = "disabled_current_user_task_state_only"
+	f["new_exam_list_coverage"] = "separate courseBean.getNewExamList read in exam stream; nonempty shape not yet verified"
 	f["assessment_body_coverage"] = "unsupported: papers are never opened"
-	mergeFields(f, c.Metadata)
+	f["catalog_sources"] = courseSources(c, f)
 	return contract.Record{Kind: contract.Course, ExternalID: c.ref(), Title: c.Name, Content: text(f["course_introduction"]), Fields: f, ObservedAt: time.Now().UTC()}
 }
 
@@ -93,14 +139,22 @@ func classify(collection string, m map[string]any) (contract.Resource, string, s
 		case "6":
 			return contract.Exam, "exam", "test.type"
 		}
+		// Legacy quiz DTOs can omit test.type but provide explicit personal
+		// assessment state. An empty/unknown test is not evidence for subtitles,
+		// a discussion or a safe standalone material body.
+		if text(test["type"]) == "" && text(m["contentType"]) == "2" {
+			for _, k := range []string{"submitStatus", "userSubmitStatus", "studentScore", "usedTryCount", "totalScore", "testTime"} {
+				if scalar(test[k]) {
+					return contract.Assignment, "quiz", "test_metadata_and_unit.contentType2"
+				}
+			}
+		}
+		return contract.Resource("material"), "assessment_unknown", "unsupported_test_type"
 	}
 	// Unit and assessment enums are different. Unit 6 is discussion; unit 5
 	// is an assessment placeholder whose exact subtype needs separate evidence.
 	switch text(m["contentType"]) {
 	case "2":
-		if test != nil {
-			return contract.Assignment, "quiz", "test_metadata_and_unit.contentType2"
-		}
 		return contract.Resource("material"), "video_subtitles", "unit.contentType2"
 	case "6":
 		return contract.Resource("discussion"), "discussion", "unit.contentType6"
@@ -136,7 +190,18 @@ func termRecords(result map[string]any, co course, r contract.Resource) ([]contr
 	if r == contract.Course {
 		c := co
 		c.Metadata = metadata(dto, nil)
-		mergeFields(c.Metadata, co.Metadata)
+		// Learning-page teachers belong to the route; all other DTO metadata
+		// belongs to this source term and must not inherit the previous term.
+		if co.Metadata["teacher_coverage"] == "official_learning_page_display_names" {
+			c.Metadata["teachers"] = co.Metadata["teachers"]
+			c.Metadata["teacher_coverage"] = co.Metadata["teacher_coverage"]
+		}
+		if v, ok := co.Metadata["catalog_sources"]; ok {
+			c.Metadata["catalog_sources"] = v
+		}
+		if id := nativeID(dto, "courseId"); id != "" {
+			c.Metadata["sourceCourseId"] = id
+		}
 		c.Metadata["catalog_chapter_count"] = len(dto["chapters"].([]any))
 		c.Metadata["catalog_status"] = "observed"
 		if len(dto["chapters"].([]any)) == 0 {
@@ -180,7 +245,9 @@ func termRecords(result map[string]any, co course, r contract.Resource) ([]contr
 		}
 		if len(teachers) > 0 {
 			rec.Fields["teachers"] = teachers
+			rec.Fields["teacher_coverage"] = "catalog_lector_display_names"
 		}
+		rec.Fields["catalog_sources"] = courseSources(c, rec.Fields)
 		return []contract.Record{rec}, nil
 	}
 	if r == contract.Progress {
@@ -291,7 +358,8 @@ func termRecords(result map[string]any, co course, r contract.Resource) ([]contr
 				}
 				if collection == "units" && kind == "discussion" {
 					f["current_user_participation_fields"] = nativeProgress(f)
-					f["current_user_participation_coverage"] = "catalog source fields only; replyCount/voteCount and completePercent are not inferred submission states"
+					f["current_user_participation_coverage"] = "direct directory task marker only; not a reply submission receipt"
+					discussionTaskStatus(f)
 				}
 				if collection == "chapters" || collection == "lessons" {
 					f["body_status"] = "not_applicable"

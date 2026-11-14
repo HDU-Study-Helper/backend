@@ -60,7 +60,7 @@ func TestTriggerOutputRejectsMissingOrInventedEvidence(t *testing.T) {
 		{`{"decision":"UNCERTAIN","reason":"待核查","relevant_change_ids":["b"]}`, true},
 		{`{"decision":"TRIGGER","reason":"x","relevant_change_ids":["unknown"]}`, false},
 		{`{"decision":"TRIGGER","reason":"x","relevant_change_ids":["a","a"]}`, false},
-		{`{"decision":"TRIGGER","reason":"x","relevant_change_ids":["b","a"]}`, false},
+		{`{"decision":"TRIGGER","reason":"x","relevant_change_ids":["b","a"]}`, true},
 		{`{"decision":"IGNORE","reason":"x","relevant_change_ids":["a"]}`, false},
 		{`{"decision":"IGNORE","reason":"x"}`, false},
 		{`{"decision":"TRIGGER","reason":"x","relevant_change_ids":[]}`, false},

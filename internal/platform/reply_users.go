@@ -42,7 +42,9 @@ func (s *Service) FetchReplyUsers(ctx context.Context, scope model.DWSScope, cou
 			return e
 		}
 		defer clear(raw)
-		page, e := reader.DiscussionReplyUsers(ctx, adapterScope(scope), raw, course, class, topic)
+		page, e := s.readWithSessionRecovery(ctx, l, state, a, raw, func(session contract.Session) (contract.Page, error) {
+			return reader.DiscussionReplyUsers(ctx, adapterScope(scope), session, course, class, topic)
+		})
 		if e != nil {
 			return e
 		}

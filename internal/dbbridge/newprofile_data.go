@@ -249,12 +249,16 @@ func (r *agentData) queryDataset(ctx context.Context, s f.Scope, q f.Query) (f.Q
 	if keep < len(result.Rows) {
 		result.Rows = result.Rows[:keep]
 		result.HasMore = true
+		result.PageLimitReason = "byte_budget"
 		next := q.Offset + keep
 		if next <= 10000 {
 			result.NextOffset = &next
 		} else {
 			result.NextOffset = nil
 		}
+	}
+	if result.HasMore && result.NextOffset == nil {
+		result.PageLimitReason = "offset_limit"
 	}
 	return result, nil
 }

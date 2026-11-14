@@ -147,18 +147,38 @@ func parseItemResults(raw string, parent string) ([]itemResult, error) {
 	}
 	return out.Items, nil
 }
-func (s *Service) processItems(ctx context.Context, b model.ControlBatch, changes []model.ControlChange, store model.ControlItemRepository) (json.RawMessage, bool, error) {
+func (s *Service) processItems(ctx context.Context, b model.ControlBatch, changes []model.ControlChange, store model.ControlItemRepository) (output json.RawMessage, incomplete bool, resultErr error) {
 	filter, e := s.findAgent(ctx, b.OwnerID, "filter")
 	if e != nil {
 		return nil, true, e
 	}
+	units, e := s.itemWorkUnits(ctx, b, changes, store)
+	if e != nil {
+		return nil, true, e
+	}
+	// Also synchronize on early failures/cancellation so the original source
+	// rows cannot remain pending after their group has terminated.
+	defer func() {
+		for _, unit := range units {
+			if !unit.grouped() {
+				continue
+			}
+			if _, err := store.GetItem(context.WithoutCancel(ctx), unit.item.ID); err == model.ErrNotFound {
+				continue
+			}
+			if err := syncCourseGroupSources(context.WithoutCancel(ctx), b, unit, store, ""); err != nil && resultErr == nil {
+				incomplete, resultErr = true, err
+			}
+		}
+	}()
 	summary := []model.ControlItem{}
 	partial := false
-	for _, change := range changes {
+	for _, unit := range units {
 		if e = ctx.Err(); e != nil {
 			return mustJSON(map[string]any{"items": summary}), true, e
 		}
-		item := newControlItem(b, change)
+		change := unit.changes[0]
+		item := unit.item
 		if existing, err := store.GetItem(ctx, item.ID); err == nil && validItemStatus(existing.Status) {
 			// Cancellation marks untouched items FAILED. Resume only those with no
 			// recorded execution; an interrupted Filter may already have written data
@@ -188,14 +208,17 @@ func (s *Service) processItems(ctx context.Context, b model.ControlBatch, change
 		if e = store.SaveItem(ctx, item); e != nil {
 			return nil, true, e
 		}
-		input, e := filterInput(b, []model.ControlChange{change})
+		if unit.grouped() {
+			if e = syncCourseGroupSources(ctx, b, unit, store, "RUNNING"); e != nil {
+				return nil, true, e
+			}
+		}
+		input, e := buildWorkItemInput(b, unit)
 		if e != nil {
 			return nil, true, e
 		}
 		var payload map[string]any
 		_ = json.Unmarshal(input, &payload)
-		payload["item_id"] = item.ID
-		payload["processing_contract"] = "逐项处理此change；原文多个课程或事务拆成items子项。item_id用父ID或父ID:1/:2。每项必须COMPLETED/IGNORED/NEEDS_USER_INPUT/PARTIAL/FAILED。routes绑定item_id，所有实际子调用均须报告。"
 		itemContext := s.enrichItemContext(context.WithValue(ctx, itemKey{}, item.ID), b, change)
 		itemContext = f.WithDispatchEvent(itemContext, b.OwnerID, mustJSON(payload))
 		result, runErr := s.Agents.Run(itemContext, b.OwnerID, f.RunRequest{AgentID: filter.ID, Trigger: f.DataChanged, Input: mustJSON(payload)})
@@ -268,7 +291,7 @@ func (s *Service) processItems(ctx context.Context, b model.ControlBatch, change
 			}
 			child.Routes = mustJSON(out.Routes)
 			issue := ""
-			if !s.validateItemEvidence(itemContext, b.OwnerID, out.Evidence, change) {
+			if !s.validateWorkUnitEvidence(itemContext, b.OwnerID, out.Evidence, unit.changes) {
 				issue = "证据引用不属于当前输入事项"
 			}
 			if out.Status == "IGNORED" && len(out.Routes) > 0 {

@@ -261,36 +261,12 @@ func (s *Service) process(parent context.Context, b model.ControlBatch) {
 			fail(e)
 			return
 		}
-		input, e := triggerInput(b)
+		decision, raw, e := s.screenTrigger(ctx, b, a.ID)
 		if e != nil {
 			fail(e)
 			return
 		}
-		result, e := s.Agents.Run(ctx, b.OwnerID, f.RunRequest{AgentID: a.ID, Trigger: f.DataChanged, Input: input})
-		if e != nil {
-			fail(e)
-			return
-		}
-		b.Trigger = json.RawMessage(`{}`)
-		if json.Valid([]byte(result.Output)) {
-			b.Trigger = json.RawMessage(result.Output)
-		}
-		decision, e := validateTrigger([]byte(result.Output), b.Changes)
-		if e != nil {
-			var correction map[string]any
-			_ = json.Unmarshal(input, &correction)
-			correction["validation_error"] = "只输出decision=TRIGGER/UNCERTAIN/IGNORE,reason,relevant_change_ids；ID必须按输入顺序、不重复、仅来自change_id。IGNORE必须空数组，不得额外字段。"
-			correction["previous_output"] = result.Output
-			result, e = s.Agents.Run(ctx, b.OwnerID, f.RunRequest{AgentID: a.ID, Trigger: f.DataChanged, Input: mustJSON(correction)})
-			if e == nil {
-				decision, e = validateTrigger([]byte(result.Output), b.Changes)
-			}
-			if e != nil {
-				fail(e)
-				return
-			}
-		}
-		b.Trigger = json.RawMessage(result.Output)
+		b.Trigger = raw
 		selected = pick(b.Changes, decision.IDs)
 	}
 	if hasItems {
@@ -596,17 +572,23 @@ func validateTrigger(raw []byte, changes []model.ControlChange) (out triggerDeci
 	if out.Reason == "" || out.IDs == nil || out.Decision == "IGNORE" && len(out.IDs) != 0 || out.Decision != "IGNORE" && len(out.IDs) == 0 {
 		return out, f.Fail("INVALID_TRIGGER_OUTPUT", "invalid relevant change list")
 	}
-	allowed := map[string]int{}
-	for i, v := range changes {
-		allowed[v.ID] = i
+	allowed := map[string]bool{}
+	for _, v := range changes {
+		allowed[v.ID] = true
 	}
-	last := -1
+	selected := map[string]bool{}
 	for _, id := range out.IDs {
-		i, ok := allowed[id]
-		if !ok || i <= last {
-			return out, f.Fail("INVALID_TRIGGER_OUTPUT", "unknown, duplicate or unordered evidence ID")
+		if !allowed[id] || selected[id] {
+			return out, f.Fail("INVALID_TRIGGER_OUTPUT", "unknown or duplicate evidence ID")
 		}
-		last = i
+		selected[id] = true
+	}
+	out.IDs = []string{}
+	for _, change := range changes {
+		if selected[change.ID] {
+			out.IDs = append(out.IDs, change.ID)
+			delete(selected, change.ID)
+		}
 	}
 	return out, nil
 }

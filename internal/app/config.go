@@ -12,6 +12,7 @@ import (
 
 // Config contains process configuration, never request-controlled paths or credentials.
 type Config struct {
+	APIOnly           bool
 	RefreshPaused     bool
 	AgentDemoEnabled  bool
 	DatabaseURL       string
@@ -30,6 +31,13 @@ type Config struct {
 
 func LoadConfig() (Config, error) {
 	c := Config{DatabaseURL: os.Getenv("DATABASE_URL"), HTTPAddr: os.Getenv("HTTP_ADDR"), PublicOrigin: os.Getenv("PUBLIC_ORIGIN"), BootstrapUsername: os.Getenv("BOOTSTRAP_ADMIN_USERNAME"), BootstrapPassword: os.Getenv("BOOTSTRAP_ADMIN_PASSWORD"), DWSBinary: os.Getenv("DWS_BINARY"), DWSBinarySHA256: os.Getenv("DWS_BINARY_SHA256"), DWSWorkspaceRoot: os.Getenv("DWS_WORKSPACE_ROOT"), DWSPollInterval: 10 * time.Minute, DWSCommandTimeout: 45 * time.Second}
+	if raw := os.Getenv("API_ONLY"); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			return c, errors.New("invalid API_ONLY")
+		}
+		c.APIOnly = v
+	}
 	if raw := os.Getenv("REFRESH_PAUSED"); raw != "" {
 		v, err := strconv.ParseBool(raw)
 		if err != nil {

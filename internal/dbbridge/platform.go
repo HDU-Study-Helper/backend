@@ -191,7 +191,7 @@ func (r *platformRepo) commit(ctx context.Context, l model.PlatformLease, kind s
 	total := 0
 	for _, v := range records {
 		total += len(v.Content)
-		if v.Kind != kind || v.ExternalID == "" || !json.Valid(v.Content) || len(v.Content) > 1<<20 || !validSource(v.Source) {
+		if (v.Kind != kind && !(kind == "discussion" && v.Source == "mooc" && v.Kind == "discussion_reply_user")) || v.ExternalID == "" || !json.Valid(v.Content) || len(v.Content) > 1<<20 || !validSource(v.Source) {
 			return model.ErrInvalidArgument
 		}
 	}
@@ -245,7 +245,7 @@ func (r *platformRepo) commit(ctx context.Context, l model.PlatformLease, kind s
 			}
 			var before []byte
 			var previousHash string
-			e := tx.QueryRow(ctx, `SELECT hash,content FROM platform_records WHERE user_id=$1 AND connection_id=$2 AND kind=$3 AND external_id=$4 AND parent_id=$5`, l.Scope.UserID, l.Scope.ConnectionID, kind, v.ExternalID, v.ParentID).Scan(&previousHash, &before)
+			e := tx.QueryRow(ctx, `SELECT hash,content FROM platform_records WHERE user_id=$1 AND connection_id=$2 AND kind=$3 AND external_id=$4 AND parent_id=$5`, l.Scope.UserID, l.Scope.ConnectionID, v.Kind, v.ExternalID, v.ParentID).Scan(&previousHash, &before)
 			if e != nil && e != pgx.ErrNoRows {
 				return storageError(e)
 			}
@@ -262,12 +262,18 @@ func (r *platformRepo) commit(ctx context.Context, l model.PlatformLease, kind s
 				updated++
 			}
 			var id int64
-			e = tx.QueryRow(ctx, `INSERT INTO platform_records(user_id,connection_id,source,kind,external_id,parent_id,hash,content,observed_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(user_id,connection_id,kind,external_id,parent_id) DO UPDATE SET hash=EXCLUDED.hash,content=EXCLUDED.content,observed_at=EXCLUDED.observed_at WHERE platform_records.hash<>EXCLUDED.hash RETURNING id`, l.Scope.UserID, l.Scope.ConnectionID, source, kind, v.ExternalID, v.ParentID, v.Hash, []byte(v.Content), v.ObservedAt).Scan(&id)
+			e = tx.QueryRow(ctx, `INSERT INTO platform_records(user_id,connection_id,source,kind,external_id,parent_id,hash,content,observed_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(user_id,connection_id,kind,external_id,parent_id) DO UPDATE SET hash=EXCLUDED.hash,content=EXCLUDED.content,observed_at=EXCLUDED.observed_at WHERE platform_records.hash<>EXCLUDED.hash RETURNING id`, l.Scope.UserID, l.Scope.ConnectionID, source, v.Kind, v.ExternalID, v.ParentID, v.Hash, []byte(v.Content), v.ObservedAt).Scan(&id)
 			if e != nil {
 				return storageError(e)
 			}
-			snapshots = append(snapshots, model.ControlChange{Operation: string(operation), Resource: kind, ConnectionID: l.Scope.ConnectionID, RecordID: strconv.FormatInt(id, 10), Before: before, After: v.Content, ChangedFields: trigger.FieldChanges(before, v.Content), OccurredAt: v.ObservedAt})
-			changes = append(changes, trigger.Change{UserID: l.Scope.UserID, ConnectionID: l.Scope.ConnectionID, Source: source, Resource: kind, RecordID: strconv.FormatInt(id, 10), ExternalID: v.ExternalID, ParentID: v.ParentID, Operation: operation, ChangedFields: trigger.FieldChanges(before, v.Content), OccurredAt: v.ObservedAt})
+			// Roster rows are evidence for their parent topic, not independent work items.
+			// The root discussion snapshot carries roster counts and coverage when the
+			// bounded list read finishes; retain every row for authorized queries.
+			if source == "mooc" && v.Kind == "discussion_reply_user" {
+				continue
+			}
+			snapshots = append(snapshots, model.ControlChange{Operation: string(operation), Resource: v.Kind, ConnectionID: l.Scope.ConnectionID, RecordID: strconv.FormatInt(id, 10), Before: before, After: v.Content, ChangedFields: trigger.FieldChanges(before, v.Content), OccurredAt: v.ObservedAt})
+			changes = append(changes, trigger.Change{UserID: l.Scope.UserID, ConnectionID: l.Scope.ConnectionID, Source: source, Resource: v.Kind, RecordID: strconv.FormatInt(id, 10), ExternalID: v.ExternalID, ParentID: v.ParentID, Operation: operation, ChangedFields: trigger.FieldChanges(before, v.Content), OccurredAt: v.ObservedAt})
 		}
 		if e := syncAcademicConnection(ctx, tx, l.Scope.UserID, l.Scope.ConnectionID); e != nil {
 			return e

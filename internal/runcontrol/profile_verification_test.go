@@ -2,53 +2,55 @@ package runcontrol
 
 import (
 	f "academic/agent/framework"
-	"academic/backend/internal/agent"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
-type profileVerifyRepo struct {
-	f.Repository
-	memories []f.Memory
-	seen     f.Scope
+func TestProfileHandoffOnlyChecksOptionalMetadataObject(t *testing.T) {
+	service := &Service{}
+	for _, tc := range []struct {
+		name string
+		raw  string
+		ok   bool
+	}{
+		{"omitted", `{"entity":{"kind":"course"}}`, true},
+		{"null", `{"profile_manifest":null}`, true},
+		{"empty", `{"profile_manifest":{}}`, true},
+		{"partial", `{"profile_manifest":{"search_coverage":[{"dataset":"schedules","complete":false}],"dimensions":{"identity":{"status":"known","source_refs":[]}}}}`, true},
+		{"array", `{"profile_manifest":[]}`, false},
+		{"string", `{"profile_manifest":"PRIVATE_SOURCE_FACT"}`, false},
+		{"number", `{"profile_manifest":42}`, false},
+		{"boolean", `{"profile_manifest":false}`, false},
+		{"definition array", `[]`, false},
+		{"definition null", `null`, false},
+		{"invalid JSON", `{`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := service.verifyWorkflowProfile(context.Background(), "owner", f.Workflow{Definition: json.RawMessage(tc.raw)})
+			if (err == nil) != tc.ok {
+				t.Fatalf("accepted=%v want=%v: %v", err == nil, tc.ok, err)
+			}
+			if err != nil && (f.SafeError(err).Code != "INVALID_WORKFLOW_PROFILE" || strings.Contains(err.Error(), "PRIVATE_SOURCE_FACT")) {
+				t.Fatal("unsafe metadata diagnostic", err)
+			}
+		})
+	}
 }
 
-func (r *profileVerifyRepo) ListMemory(_ context.Context, s f.Scope, _ string, _ int) ([]f.Memory, error) {
-	r.seen = s
-	return r.memories, nil
-}
-func TestProfileVerificationRequiresBoundPrivateKnowledge(t *testing.T) {
-	p := map[string]any{"version": 1, "keywords": []string{"数学分析", "数分"}, "search_coverage": []any{map[string]any{"dataset": "schedules", "complete": true}}, "dimensions": map[string]any{}}
-	p["search_coverage"] = []any{}
-	for _, dataset := range []string{"platform_records", "academic_offerings", "academic_items", "schedules", "dws_messages", "dws_attachments"} {
-		p["search_coverage"] = append(p["search_coverage"].([]any), map[string]any{"dataset": dataset, "complete": true})
-	}
-	for _, key := range []string{"identity", "timetable", "teaching_progress", "assignments", "materials", "discussion_participation"} {
-		p["dimensions"].(map[string]any)[key] = map[string]any{"status": "partial", "source_refs": []string{"platform_records:1"}}
-	}
-	raw, _ := json.Marshal(map[string]any{"profile_manifest": p})
-	w := f.Workflow{ID: "wf", OwnerID: "owner", CreatedBy: "learner", Definition: raw}
-	refs := json.RawMessage(`["platform_records:1"]`)
-	r := &profileVerifyRepo{memories: []f.Memory{{Visibility: "PRI", WorkflowID: "wf", Status: "active", Category: "profile_index", SourceRefs: refs}, {Visibility: "PRI", WorkflowID: "wf", Status: "active", Category: "identity", SourceRefs: refs}}}
-	s := &Service{Agents: &agent.Service{Registry: f.Registry{Repository: r}}}
-	if err := s.verifyWorkflowProfile(context.Background(), "owner", w); err != nil {
-		t.Fatal(err)
-	}
-	if r.seen.OwnerID != "owner" || r.seen.WorkflowID != "wf" || r.seen.AgentID != "learner" {
-		t.Fatal("untrusted scope", r.seen)
-	}
-	r.memories[1].WorkflowID = "other"
-	if s.verifyWorkflowProfile(context.Background(), "owner", w) == nil {
-		t.Fatal("foreign memory accepted")
-	}
-	r.memories[1].WorkflowID = "wf"
-	r.memories[0].AgentID = "learner"
-	if s.verifyWorkflowProfile(context.Background(), "owner", w) == nil {
-		t.Fatal("Agent PRI used as Workflow profile")
-	}
-	w.Definition = json.RawMessage(`{"profile_manifest":{"version":1,"keywords":["数分"]}}`)
-	if s.verifyWorkflowProfile(context.Background(), "owner", w) == nil {
-		t.Fatal("missing coverage accepted")
+func TestProfileHandoffDoesNotRequireKnowledgeCategoriesOrMemoryCount(t *testing.T) {
+	// No Agents repository is configured: metadata validation must not invent a
+	// profile-index/topic lookup or reject a Workflow for having no such memory.
+	service := &Service{}
+	for _, raw := range []string{
+		`{"profile_manifest":{"version":1}}`,
+		`{"profile_manifest":{"version":2,"retrieval_strategy":"custom","query_coverage":[]}}`,
+		`{"profile_manifest":{"version":99,"search_coverage":[{"dataset":"schedules","complete":false}],"dimensions":{}}}`,
+		`{"profile_manifest":{"dimensions":{"materials":{"status":"partial"}}}}`,
+	} {
+		if err := service.verifyWorkflowProfile(context.Background(), "owner", f.Workflow{ID: "wf", OwnerID: "owner", Definition: json.RawMessage(raw)}); err != nil {
+			t.Fatal("business completeness blocked handoff", err)
+		}
 	}
 }

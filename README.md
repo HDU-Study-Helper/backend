@@ -71,6 +71,7 @@ go run ./cmd/api
 |---|---|
 | `DATABASE_URL` | 必填；本地可用 sslmode=disable，远程按部署要求启用 TLS |
 | `HTTP_ADDR` | 默认 `:2610` |
+| `API_ONLY` | 默认 false；true 时保留完整 HTTP、平台授权及显式手动操作，不启动 Agent 批次执行器或全局信息刷新时钟，可与已有后台任务实例共用数据库 |
 | `PUBLIC_ORIGIN` | 可选固定浏览器 Origin；反向代理必须设真实外部 Origin，无路径/末尾斜杠 |
 | `COOKIE_SECURE` | HTTPS 必须 true；本地 HTTP false |
 | `BOOTSTRAP_ADMIN_USERNAME/PASSWORD` | 首次创建管理员，必须同时提供；不重置已有账号 |

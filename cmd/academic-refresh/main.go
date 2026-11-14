@@ -10,9 +10,12 @@ import (
 	"academic/backend/internal/model"
 	"academic/backend/internal/mooc"
 	"academic/backend/internal/platform"
+	"academic/backend/internal/runcontrol"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -41,9 +44,13 @@ func main() {
 	}
 }
 func run() error {
+	options, err := parseCollectionOptions(os.Getenv)
+	if err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, options.timeout)
 	defer cancel()
 	db, err := dbbridge.Open(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil {
@@ -62,7 +69,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	deps := contract.Dependencies{HTTPClient: &http.Client{Timeout: 40 * time.Second}}
+	deps := contract.Dependencies{HTTPClient: &http.Client{
+		Timeout:   40 * time.Second,
+		Transport: newPacedTransport(http.DefaultTransport, options.interval),
+	}}
 	cx, err := chaoxing.New(deps)
 	if err != nil {
 		return err
@@ -108,22 +118,13 @@ func run() error {
 		return err
 	}
 	ctx, _ = model.WithRefreshReport(ctx)
-	round, err := db.Control().StartRound(ctx, "academic-structure-refactor")
-	if err != nil {
+	round, err := collectRound(ctx, db.Control(), func(ctx context.Context) error {
+		return svc.CollectOnceWithTimeout(ctx, options.timeout)
+	})
+	if round == "" {
 		return err
 	}
-	ctx = model.WithControlRound(ctx, round)
-	err = svc.CollectOnce(ctx)
-	cleanup, end := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer end()
 	results := model.RefreshSnapshot(ctx)
-	finishErr := db.Control().FinishRound(cleanup, round, results, err != nil)
-	if finishErr != nil {
-		return finishErr
-	}
-	if sealErr := db.Control().Seal(cleanup); sealErr != nil {
-		return sealErr
-	}
 	report := map[string]any{"round_id": round, "results": results, "failed": err != nil, "agents_started": false}
 	raw, encodeErr := json.MarshalIndent(report, "", "  ")
 	if encodeErr != nil {
@@ -138,4 +139,26 @@ func run() error {
 	}
 	fmt.Println(string(raw))
 	return err
+}
+
+func collectRound(ctx context.Context, repo model.ControlRepository, collect func(context.Context) error) (round string, err error) {
+	instance := "academic-refresh-" + rand.Text()
+	round, err = repo.StartRound(ctx, instance)
+	if err != nil {
+		return "", err
+	}
+	ctx = model.WithControlRound(ctx, round)
+	stopHeartbeat := runcontrol.KeepRefreshAlive(ctx, repo, round, instance)
+	defer func() {
+		stopHeartbeat()
+		cleanup, end := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer end()
+		err = errors.Join(err, repo.FinishRound(cleanup, round, model.RefreshSnapshot(ctx), err != nil || ctx.Err() != nil))
+		err = errors.Join(err, repo.Seal(cleanup))
+	}()
+	err = collect(ctx)
+	if ctx.Err() != nil {
+		err = errors.Join(err, ctx.Err())
+	}
+	return round, err
 }

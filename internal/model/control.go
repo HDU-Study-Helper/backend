@@ -146,6 +146,14 @@ type ControlRepository interface {
 	GetRun(context.Context, string) (ControlRun, error)
 	BatchRuns(context.Context, string) ([]ControlRun, error)
 }
+
+// ControlRoundHeartbeater renews only one owned collection round, without
+// performing the worker heartbeat's global stale-work housekeeping.
+// It is optional so existing ControlRepository implementations remain compatible.
+type ControlRoundHeartbeater interface {
+	HeartbeatRound(context.Context, string, string) error
+}
+
 type controlRoundKey struct{}
 
 func WithControlRound(ctx context.Context, id string) context.Context {

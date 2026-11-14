@@ -6,10 +6,18 @@ import (
 	"encoding/json"
 )
 
-// Course batches are kept intact. Legacy platform batches keep their prior input
-// shape and 48 KiB bound; a course input can use up to 768 KiB without truncation.
-// Unassociated connection batches retain the smaller bound.
+const triggerPageBytes = 128 << 10
+const triggerPageEvents = 100
+
+// Leave room for a bounded validation correction without removing evidence.
+const triggerCorrectionReserve = 4 << 10
+
+// Legacy platform batches retain their prior input shape and 48 KiB bound.
 func triggerInput(b model.ControlBatch) (json.RawMessage, error) {
+	return encodeTriggerInput(b, nil)
+}
+
+func encodeTriggerInput(b model.ControlBatch, page map[string]int) (json.RawMessage, error) {
 	changes := []map[string]any{}
 	for _, v := range b.Changes {
 		one := map[string]any{"change_id": v.ID, "operation": v.Operation, "resource": v.Resource, "source": v.Source, "occurred_at": v.OccurredAt, "evidence_ids": []string{v.ID}}
@@ -35,8 +43,11 @@ func triggerInput(b model.ControlBatch) (json.RawMessage, error) {
 		}
 		payload["time_semantics"] = "occurred_at表示采集变化观察时间，不是源发布时间；按各条源证据判断新旧"
 		if b.Scope.Kind == "course" {
-			limit = 768 << 10
+			limit = triggerPageBytes
 		}
+	}
+	if page != nil {
+		payload["page"] = page
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

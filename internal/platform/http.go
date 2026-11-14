@@ -60,6 +60,14 @@ func (s *Service) Routes() http.Handler {
 		httpkit.WriteJSON(w, 201, map[string]any{"connection": c, "auth": authDTO(a)})
 	})
 	r.Route("/connections/{connection}", func(r chi.Router) {
+		r.Post("/refresh-session", func(w http.ResponseWriter, r *http.Request) {
+			connection, err := s.RefreshSession(r.Context(), requestScope(r))
+			if err != nil {
+				failHTTP(w, r, err)
+				return
+			}
+			httpkit.WriteJSON(w, 200, map[string]any{"connection": connection, "session_refreshed": true})
+		})
 		r.Get("/auth", func(w http.ResponseWriter, r *http.Request) {
 			a, e := s.Auth(r.Context(), requestScope(r))
 			if e != nil {

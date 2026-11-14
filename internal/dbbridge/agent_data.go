@@ -126,24 +126,55 @@ func jsonFieldProjection(document string, keys []string, arrays []string) string
 }
 
 var safeSourceMetadataKeys = []string{
+	"examId", "isTestChecked", "testDraftStatus", "testTime", "trytime", "evaluateJudgeType", "lessonLearned", "lessonsCount", "progress_status", "progress_coverage", "progress_value_semantics", "new_exam_list_coverage",
 	"body_status", "body_reason", "coverage", "node_id", "parent_node_id", "order", "task_point_total", "task_point_remaining", "task_point_completed", "personal_status",
 	"answer_time_raw", "answer_time_source", "question_count", "full_score", "header_status", "start_at", "end_at", "deadline_raw", "deadline_source", "deadline_reason", "deadline_status",
 	"published_at_raw", "published_at_source", "updated_at_raw", "updated_at_source", "start_time_raw", "end_time_raw", "start_reason", "end_reason", "classification_status", "unit_type", "task_type",
 	"reply_count", "discussion_count", "current_user_status", "source_status", "source_inconsistent", "time_raw", "time_precision", "time_semantics", "time_reason",
+	"task_point_status", "task_point_status_source", "task_point_status_semantics", "participation_status_reason", "current_user_reply_count", "reply_collection_policy",
 	"start_at_raw", "start_at_source", "end_at_raw", "end_at_source", "question_count_source", "full_score_source", "header_coverage",
 	"topic_id", "participation_status", "is_current_user", "participation_coverage", "discussion_record_type", "root_discussion_id", "replyId", "postId", "current_user_identity_coverage", "current_user_participation_coverage",
-	"reply_page", "reply_coverage", "reply_pages_read", "reply_count_observed", "reply_total_count", "reply_total_pages", "reply_snapshot_changed", "reply_truncated", "comment_coverage", "source_detail_endpoint",
+	"replyTime", "user_name", "anonymous", "current_user_match", "source_list_endpoint", "source_scope", "position", "catalog_node_type", "totalLearnedTime", "reply_roster_coverage", "reply_body_coverage", "detail_progress_fields", "submitTime", "evaluateStatus", "userEvaluateStatus", "evaluateCount", "evaluatedCount", "reply_page", "reply_coverage", "reply_pages_read", "reply_count_observed", "reply_total_count", "reply_total_pages", "reply_snapshot_changed", "reply_truncated", "comment_coverage", "source_detail_endpoint",
 }
 
-var safeProgressMetadataKeys = []string{"submitStatus", "userSubmitStatus", "userEffectStatus", "finishStatus", "studentScore", "userScore", "finalMark", "usedTryCount", "finished", "learned", "learnStatus", "progress", "completePercent", "learnTime", "learnCount", "totalLearnedTime", "replyCount", "voteCount", "viewStatus"}
+var safeProgressMetadataKeys = []string{"submitStatus", "userSubmitStatus", "userEffectStatus", "finishStatus", "studentScore", "userScore", "finalMark", "usedTryCount", "finished", "learned", "learnStatus", "progress", "completePercent", "learnTime", "learnCount", "totalLearnedTime", "replyCount", "voteCount", "viewStatus", "totalLearnedTime", "submitTime", "evaluateStatus", "userEvaluateStatus", "evaluateCount", "evaluatedCount", "lessonLearned", "lessonsCount"}
+
+// Match the source catalog's test metadata scalars without admitting arbitrary
+// test DTOs, question bodies, answers, profiles or provenance objects.
+var safeTestMetadataKeys = []string{
+	"contentType", "type", "position", "releaseTime", "gmtCreate", "gmtModified", "firstPublishTime", "published", "publishStatus", "visible", "viewStatus", "webVisible", "draftStatus", "testDraftStatus", "isTestChecked", "duration", "durationInSeconds", "learnTime", "learnCount", "totalLearnedTime", "completePercent", "contentFileName", "submitStatus", "finishStatus", "statusText", "statusName", "studentScore", "userScore", "finalMark", "totalScore", "bonusScore", "testScore", "usedTryCount", "trytime", "tryTime", "testTime", "examTime", "questionCount", "submitEndTime", "deadline", "endTime", "examEndTime", "testEndTime", "homeworkEndTime", "jobDeadline", "closeTime", "startTime", "examStartTime", "evaluateStart", "evaluateEnd", "evaluationEndTime", "evaluateScoreReleaseTime", "evaluateJudgeType", "evaluateNeedTrain", "enableEvaluation", "scorePubStatus", "peerReviewStatus", "evaluationStatusText", "finished", "learned", "learnStatus", "progress", "replyCount", "voteCount", "examId", "examType", "objectTestId", "subjectTestId", "submitTestCount", "scoreReleaseTime", "scoreReleaseType", "userSubmitStatus", "userEffectStatus", "submitTime", "evaluateStatus", "userEvaluateStatus", "evaluateCount", "evaluatedCount",
+}
+
+func safeTestMetadataProjection(document string) string {
+	keys := make([]string, len(safeTestMetadataKeys))
+	for i, key := range safeTestMetadataKeys {
+		keys[i] = "'" + key + "'"
+	}
+	// Bound both the key set and each scalar, including old or malformed rows
+	// that did not pass through academicSafeFields. Keep source types intact.
+	return "COALESCE((SELECT jsonb_object_agg(kv.key,kv.value) FROM jsonb_each(CASE WHEN jsonb_typeof(" + document + ")='object' THEN " + document + " ELSE '{}'::jsonb END) kv WHERE kv.key IN (" + strings.Join(keys, ",") + ") AND jsonb_typeof(kv.value) IN ('string','number','boolean') AND octet_length(kv.value #>> '{}') BETWEEN 1 AND 512),'{}'::jsonb)"
+}
+
 var safeAssessmentTimeKeys = []string{"releaseTime", "startTime", "examStartTime", "endTime", "deadline", "submitEndTime", "examEndTime", "testEndTime", "homeworkEndTime", "jobDeadline", "closeTime", "evaluateStart", "evaluateEnd", "evaluationEndTime", "evaluateScoreReleaseTime", "scoreReleaseTime"}
 
 func safeMetadataProjection(document string) string {
 	base := "(" + jsonFieldProjection(document, safeSourceMetadataKeys, []string{"path_ids"}) + ")::jsonb"
-	objects := []string{base}
-	for _, key := range []string{"native_progress_fields", "current_user_participation_fields"} {
-		projection := jsonFieldProjection("("+document+"->'"+key+"')", safeProgressMetadataKeys, nil)
-		objects = append(objects, "jsonb_build_object('"+key+"',("+projection+")::jsonb)")
+	objects := []string{base, "jsonb_build_object('test_metadata'," + safeTestMetadataProjection("("+document+"->'test_metadata')") + ")"}
+	// jsonFieldProjection strips nulls by default. These task-state fields use
+	// explicit source null to distinguish unknown evidence from zero or false.
+	nullEvidence := func(document string, keys ...string) string {
+		parts := []string{"'{}'::jsonb"}
+		for _, key := range keys {
+			expr := document + "->'" + key + "'"
+			parts = append(parts, "CASE WHEN jsonb_typeof("+expr+")='null' THEN jsonb_build_object('"+key+"',NULL) ELSE '{}'::jsonb END")
+		}
+		return "(" + strings.Join(parts, " || ") + ")"
+	}
+	objects = append(objects, nullEvidence(document, "current_user_reply_count", "task_point_completed", "lessonLearned", "lessonsCount"))
+	for _, key := range []string{"native_progress_fields", "current_user_participation_fields", "detail_native_progress_fields", "detail_progress_fields"} {
+		nested := "(" + document + "->'" + key + "')"
+		projection := "(" + jsonFieldProjection(nested, safeProgressMetadataKeys, nil) + ")::jsonb || " + nullEvidence(nested, "viewStatus", "replyCount", "lessonLearned", "lessonsCount")
+		objects = append(objects, "jsonb_build_object('"+key+"',("+projection+"))")
 	}
 	// The current-user presence flags are booleans, never a roster object.
 	current := []string{}

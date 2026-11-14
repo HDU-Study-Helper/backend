@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/jackc/pgx/v5"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -222,6 +223,7 @@ func TestControlEndToEndParallelPlatformsSerialWorkflow(t *testing.T) {
 		raw, _ := json.Marshal(v)
 		return f.ModelResponse{Message: f.Message{Role: "assistant", Content: string(raw)}, FinishReason: "stop"}
 	}
+	trustedRunID := regexp.MustCompile(`Trusted run_id=([^;\s]+);`)
 	provider := controlModelFunc(func(c context.Context, r f.ModelRequest) (f.ModelResponse, error) {
 		mu.Lock()
 		modelCalls++
@@ -277,13 +279,13 @@ func TestControlEndToEndParallelPlatformsSerialWorkflow(t *testing.T) {
 					if !result.OK {
 						t.Errorf("dispatch failed: %s", m.Content)
 					}
-					routes = append(routes, map[string]any{"target": "WORKER", "workflow_id": wfs[i].ID, "execution": result.Data})
+					routes = append(routes, map[string]any{"item_id": itemInput.ItemID, "target": "WORKER", "workflow_id": wfs[i].ID, "execution": result.Data})
 					i++
 				}
 				mu.Lock()
 				filterActive--
 				mu.Unlock()
-				return done(map[string]any{"items": []map[string]any{{"item_id": itemInput.ItemID, "title": "具体作业通知", "status": "COMPLETED", "reason": "两条专业路由已完成", "routes": routes, "evidence_refs": []string{}}}}), nil
+				return done(map[string]any{"items": []map[string]any{{"item_id": itemInput.ItemID, "title": "具体作业通知", "status": "COMPLETED", "reason": "两条专业路由已完成", "routes": routes, "evidence_refs": []string{}, "artifacts": []any{}}}}), nil
 			}
 			mu.Lock()
 			filterActive++
@@ -319,7 +321,22 @@ func TestControlEndToEndParallelPlatformsSerialWorkflow(t *testing.T) {
 			activeWF[input.Workflow.ID]--
 			workerTotal--
 			mu.Unlock()
-			return done(map[string]any{"status": "COMPLETED"}), nil
+			runID := ""
+			for _, message := range r.Messages {
+				if message.Role == "system" {
+					if match := trustedRunID.FindStringSubmatch(message.Content); len(match) == 2 {
+						runID = match[1]
+					}
+				}
+			}
+			if runID == "" {
+				return f.ModelResponse{}, f.Fail("TEST", "missing trusted runtime identity")
+			}
+			workflow, e := db.Agents().GetWorkflow(c, u.ID, input.Workflow.ID)
+			if e != nil {
+				return f.ModelResponse{}, e
+			}
+			return done(map[string]any{"run_id": runID, "workflow_id": workflow.ID, "workflow_version": workflow.Version, "status": "COMPLETED", "summary": "已完成通知处理测试流程", "artifacts": []any{}, "actions": []any{}, "evidence_refs": []any{}, "evolution_feedback": []any{}, "interaction": nil, "collaboration": nil}), nil
 		}
 		return f.ModelResponse{}, f.Fail("TEST", "unexpected provider")
 	})

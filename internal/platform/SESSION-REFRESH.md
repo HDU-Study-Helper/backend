@@ -1,0 +1,13 @@
+# Existing-session Cookie refresh
+
+Chaoxing and MOOC implement optional `contract.SessionRefresher.RefreshSession(ctx, scope, session)`. It uses saved authorization only, verifies access to an authenticated course response, returns updated opaque session state and never opens a new QR challenge or reads passwords. Cookie updates, deletions and absolute expiry are retained. Successful refresh does not guarantee a longer root-login lifetime.
+
+`platform.Service.RefreshSession` acquires the existing connection-wide fencing lease, rejects disconnected or pending connections, decrypts the saved session, delegates refresh, encrypts the verified result and uses `SaveAuth(active)` under that lease. It leaves checkpoints and business records unchanged. Explicit refresh can recover an enabled `expired` connection while saved credentials remain valid; a disconnected connection has no recovery path.
+
+`POST /api/v1/platforms/connections/{connection}/refresh-session` returns only `{connection,session_refreshed:true}` through the normal authenticated, same-origin CSRF-protected route. No Cookie, URL ticket or opaque state is returned. The connection card offers “刷新登录会话” for enabled active/expired MOOC and Chaoxing connections.
+
+Normal automatic/manual Sync and course-partition Sync recover once when the adapter explicitly returns `auth_required`. The host persists verified refreshed cookies before retrying the same resource and identical cursor. Chaoxing discussion roster reads use the same one-refresh rule. Parse failures, rate limiting, CAPTCHA/verification and upstream outages do not cause authentication refresh. A second authentication failure is final and marks the connection expired; failures never advance the resource checkpoint. A refreshed session can survive a subsequent business-read outage without discarding valid cookies.
+
+MOOC follows the official HTTPS same-origin `/home.htm` Cookie exchange and verifies the learner course panel RPC. Its existing precise stale-null/zero-total panel shape also has a bounded recovery path in Sync. Unknown malformed data remains a parse error. Chaoxing revisits known official home/login GET entries and verifies real course JSON with stable UID; unsupported redirects, account change or a login form cannot establish success. Neither path executes login JavaScript or bypasses a platform challenge.
+
+Default tests are offline. Session tests cover encrypted persistence, preserved cursor, owner isolation, disconnect/lease fencing, one retry only, error taxonomy and no expiry extension. Actual local authorized verification on 2026-11-11 succeeded for both configured sources; before/after checkpoint fingerprints matched. The verification receipt contains no Cookie values.

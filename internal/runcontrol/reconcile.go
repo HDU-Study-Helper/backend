@@ -4,7 +4,6 @@ import (
 	f "academic/agent/framework"
 	"academic/backend/internal/model"
 	"context"
-	"encoding/json"
 	"strings"
 )
 
@@ -36,10 +35,11 @@ func (s *Service) ReconcileSavedItemResults(ctx context.Context, filterRunID str
 	if parent.OwnerID != run.OwnerID || parent.BatchID != run.BatchID {
 		return 0, model.ErrConflict
 	}
-	var change model.ControlChange
-	if json.Unmarshal(parent.Input, &change) != nil || change.ID != parent.ChangeID {
-		return 0, model.ErrInvalidArgument
+	changes, e := changesForSavedItem(parent)
+	if e != nil {
+		return 0, e
 	}
+	change := changes[0]
 	batch, e := s.Store.GetBatch(ctx, parent.BatchID)
 	if e != nil {
 		return 0, e
@@ -116,7 +116,7 @@ func (s *Service) ReconcileSavedItemResults(ctx context.Context, filterRunID str
 		if !evidenceOnlyRejection(current, out, run.ID) && !formattingOnly && !itemIDOnly && !learnerFlagOnly {
 			continue
 		}
-		if !s.validateItemEvidence(itemContext, run.OwnerID, out.Evidence, change) {
+		if !s.validateWorkUnitEvidence(itemContext, run.OwnerID, out.Evidence, changes) {
 			continue
 		}
 		if out.Status == "COMPLETED" {
@@ -141,6 +141,41 @@ func (s *Service) ReconcileSavedItemResults(ctx context.Context, filterRunID str
 			return changed, err
 		}
 		changed++
+	}
+	if changed > 0 && parent.Resource == "course_change_group" {
+		// A root result may have been repaired directly, or split children may
+		// now all be terminal. Derive the container from persisted results before
+		// refreshing its original-source audit links.
+		if _, rootReturned := func() (itemResult, bool) {
+			for _, out := range parsed {
+				if out.ID == parent.ID {
+					return out, true
+				}
+			}
+			return itemResult{}, false
+		}(); !rootReturned {
+			parent.Status = "COMPLETED"
+			allIgnored := true
+			for _, out := range parsed {
+				child, err := store.GetItem(ctx, out.ID)
+				if err != nil {
+					return changed, err
+				}
+				allIgnored = allIgnored && child.Status == "IGNORED"
+				if child.Status != "COMPLETED" && child.Status != "IGNORED" {
+					parent.Status = "PARTIAL"
+				}
+			}
+			if allIgnored {
+				parent.Status = "IGNORED"
+			}
+			if err := store.SaveItem(ctx, parent); err != nil {
+				return changed, err
+			}
+		}
+		if err := syncCourseGroupSources(ctx, batch, itemWorkUnit{item: parent, changes: changes}, store, ""); err != nil {
+			return changed, err
+		}
 	}
 	return changed, nil
 }

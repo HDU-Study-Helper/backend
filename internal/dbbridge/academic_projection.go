@@ -94,7 +94,7 @@ func academicRef(source, course, class, term string) string {
 }
 func academicKind(v academicRaw) (kind, task string) {
 	kind, task = v.row.Kind, academicField(v.fields, "task_type")
-	if v.row.Source == "mooc" && academicField(v.fields, "contentType") == "6" {
+	if v.row.Source == "mooc" && (kind == "exam" || kind == "discussion" || kind == "material") && academicField(v.fields, "contentType") == "6" {
 		collection := academicField(v.fields, "source_collection", "collection")
 		explicit := academicField(v.fields, "assessment_evidence", "assessmentEvidence", "examId", "assessmentId")
 		if explicit == "unit.contentType6" {
@@ -119,18 +119,41 @@ func academicKind(v academicRaw) (kind, task string) {
 	return
 }
 
-var academicPersonalKeys = []string{"userScore", "studentScore", "totalScore", "finalMark", "usedTryCount", "submitStatus", "finishStatus", "statusText", "statusName", "status", "submission_status", "availability_status", "score_raw", "evaluateStart", "evaluateEnd", "evaluationEndTime", "evaluateScoreReleaseTime", "enableEvaluation", "scorePubStatus", "peerReviewStatus", "evaluationStatusText", "finished", "learned", "learnStatus", "progress", "lastLearnUnitId", "completed", "total", "finished_count", "total_count", "completePercent", "learnTime", "personal_status", "task_point_total", "task_point_completed", "task_point_remaining", "participation_status", "is_current_user", "participation_coverage"}
+var academicPersonalKeys = []string{"userScore", "studentScore", "totalScore", "finalMark", "usedTryCount", "userSubmitStatus", "userEffectStatus", "totalLearnedTime", "learnCount", "replyCount", "voteCount", "viewStatus", "submitTime", "evaluateStatus", "userEvaluateStatus", "evaluateCount", "evaluatedCount", "submitStatus", "finishStatus", "statusText", "statusName", "status", "submission_status", "availability_status", "score_raw", "evaluateStart", "evaluateEnd", "evaluationEndTime", "evaluateScoreReleaseTime", "enableEvaluation", "scorePubStatus", "peerReviewStatus", "evaluationStatusText", "finished", "learned", "learnStatus", "progress", "lastLearnUnitId", "completed", "total", "finished_count", "total_count", "completePercent", "learnTime", "personal_status", "task_point_total", "task_point_completed", "task_point_remaining", "participation_status", "is_current_user", "participation_coverage"}
 var academicMetadataKeys = []string{"contentType", "type", "courseType", "source_scope", "source_collection", "assessment_evidence", "body_status", "coverage", "identity_source", "duration_raw", "terminal_raw", "time_raw", "time_source", "size_raw", "creator", "file_type", "material_type", "parent_id", "folder_id", "replyCount", "reply_count", "praiseCount", "praise_count", "topicType", "isTeacher", "deadline_raw", "deadline_source", "published_at_raw", "published_at_source", "updated_at_raw", "updated_at_source", "status_interpretation", "sourceCourseId", "metric", "inconsistency_reason", "nodeId", "catalog_node_type", "unit_type", "classification_status", "coverage_reason", "notice_coverage", "assessment_body_coverage", "source_term_discovery", "releaseTime", "gmtCreate", "gmtModified", "firstPublishTime", "position", "duration", "durationInSeconds", "contentFileName", "publishStatus", "visible", "viewStatus", "webVisible", "draftStatus", "material_body_coverage", "discussion_body_coverage", "body_reason", "time_reason", "catalog_status", "catalog_chapter_count", "source_inconsistent", "parent_data_id", "time_precision", "time_semantics", "source_endpoint", "source_body_endpoint", "noticeId", "postId", "post_title", "postTime", "countReply", "countVote", "countBrowse", "lastReplyTime", "discussion_coverage", "textPages", "textPageWhRatio", "weight", "publishTime", "answer_time_raw", "answer_time_source", "question_count", "question_count_source", "full_score", "full_score_source", "header_status", "header_coverage", "start_at_raw", "start_at_source", "end_at_raw", "end_at_source", "node_id", "parent_node_id", "order", "task_point_total", "task_point_completed", "task_point_remaining", "personal_status", "participation_status", "is_current_user", "participation_coverage", "topic_id", "reply_id", "user_id", "user_name", "anonymous", "reply_created_at_raw", "reply_created_at_source", "discussion_record_type", "evaluateStart", "evaluateEnd", "evaluationEndTime", "evaluateScoreReleaseTime", "scoreReleaseTime", "current_user_state", "native_progress_fields", "current_user_participation_fields", "assessment_time_fields", "assessment_time_semantics", "assessment_time_coverage", "progress_status", "progress_coverage", "progress_value_semantics", "root_discussion_id", "replyId", "current_user_identity_coverage", "current_user_participation_coverage", "reply_page", "reply_coverage", "reply_pages_read", "reply_count_observed", "reply_total_count", "reply_total_pages", "reply_snapshot_changed", "reply_truncated", "comment_coverage", "source_detail_endpoint", "header_reason", "node_progress_coverage", "task_point_total_source", "task_point_remaining_source", "task_point_completed_source", "personal_status_source", "personal_status_reason", "current_user_match", "participation_semantics"}
 
+func init() {
+	academicMetadataKeys = append(academicMetadataKeys, "examId", "isTestChecked", "testDraftStatus", "testTime", "trytime", "evaluateJudgeType", "test_metadata")
+	academicPersonalKeys = append(academicPersonalKeys, "task_point_status", "task_point_status_source", "participation_status_reason", "current_user_reply_count", "lessonLearned", "lessonsCount")
+	academicMetadataKeys = append(academicMetadataKeys, "replyTime", "source_list_endpoint", "current_user_match", "totalLearnedTime", "voteCount", "order", "reply_roster_coverage", "reply_body_coverage", "discussion_reply_roster_coverage", "detail_native_progress_fields", "detail_progress_fields", "task_point_status", "task_point_status_source", "task_point_status_semantics", "participation_status_reason", "current_user_reply_count", "reply_collection_policy", "lessonLearned", "lessonsCount", "progress_status", "progress_coverage", "progress_value_semantics", "new_exam_list_coverage")
+}
+
 var academicAssessmentTimeKeys = []string{"releaseTime", "startTime", "examStartTime", "endTime", "deadline", "submitEndTime", "examEndTime", "testEndTime", "homeworkEndTime", "jobDeadline", "closeTime", "evaluateStart", "evaluateEnd", "evaluationEndTime", "evaluateScoreReleaseTime", "scoreReleaseTime"}
-var academicProgressDetailKeys = []string{"submitStatus", "userSubmitStatus", "userEffectStatus", "finishStatus", "studentScore", "userScore", "finalMark", "usedTryCount", "finished", "learned", "learnStatus", "progress", "completePercent", "learnTime", "learnCount", "totalLearnedTime", "replyCount", "voteCount", "viewStatus"}
-var academicNestedMetadataKeys = map[string][]string{"current_user_state": {"hasFollowed", "hasVoteUp", "hasVoteDown"}, "native_progress_fields": academicProgressDetailKeys, "current_user_participation_fields": academicProgressDetailKeys}
+var academicProgressDetailKeys = []string{"submitStatus", "userSubmitStatus", "userEffectStatus", "finishStatus", "studentScore", "userScore", "finalMark", "usedTryCount", "finished", "learned", "learnStatus", "progress", "completePercent", "learnTime", "learnCount", "totalLearnedTime", "replyCount", "voteCount", "viewStatus", "userSubmitStatus", "userEffectStatus", "totalLearnedTime", "submitTime", "evaluateStatus", "userEvaluateStatus", "evaluateCount", "evaluatedCount", "lessonLearned", "lessonsCount"}
+var academicNestedMetadataKeys = map[string][]string{"current_user_state": {"hasFollowed", "hasVoteUp", "hasVoteDown"}, "native_progress_fields": academicProgressDetailKeys, "current_user_participation_fields": academicProgressDetailKeys, "detail_native_progress_fields": academicProgressDetailKeys, "detail_progress_fields": academicProgressDetailKeys}
 
 func academicSafeFields(f map[string]any, keys []string) map[string]any {
 	out := map[string]any{}
 	for _, k := range keys {
 		if v, ok := f[k]; ok {
-			if s := academicString(v); s != "" && len(s) <= 512 {
+			if k == "test_metadata" {
+				if nested, ok := v.(map[string]any); ok {
+					safe := map[string]any{}
+					for _, key := range safeTestMetadataKeys {
+						if value, ok := nested[key]; ok {
+							if scalar := academicString(value); scalar != "" && len(scalar) <= 512 {
+								safe[key] = value
+							}
+						}
+					}
+					out[k] = safe
+				}
+				continue
+			}
+			// Preserve explicit unknown task evidence without inventing zero/false.
+			if v == nil && (k == "viewStatus" || k == "replyCount" || k == "current_user_reply_count" || k == "task_point_completed" || k == "lessonLearned" || k == "lessonsCount") {
+				out[k] = nil
+			} else if s := academicString(v); s != "" && len(s) <= 512 {
 				out[k] = v
 			} else if keys, ok := academicNestedMetadataKeys[k]; ok {
 				if nested, ok := v.(map[string]any); ok {
@@ -265,9 +288,9 @@ func academicItemFromRaw(owner, connection string, v academicRaw, refs map[strin
 			item.Published = academicTimeField(v.fields, "sendTime", "insertTime", "publishTime", "createTime")
 		}
 	}
-	if kind == "discussion" {
+	if kind == "discussion" || kind == "discussion_reply_user" {
 		if item.Published.Raw == "" {
-			item.Published = academicTimeField(v.fields, "postTime", "createTime", "create_time", "insertTime", "publishTime", "publish_time", "createtime")
+			item.Published = academicTimeField(v.fields, "replyTime", "reply_created_at_raw", "postTime", "gmtCreate", "createTime", "create_time", "insertTime", "publishTime", "publish_time", "createtime")
 		}
 	}
 	if item.Published.Raw == "" && v.occurred != "" {
@@ -296,7 +319,7 @@ func academicItemFromRaw(owner, connection string, v academicRaw, refs map[strin
 	}
 	if item.Deadline.Raw == "" && academicField(v.fields, "unit_type") != "assessment_unknown" {
 		switch kind {
-		case "material", "chapter", "lesson", "progress", "course_observation", "discussion":
+		case "material", "chapter", "lesson", "progress", "course_observation", "discussion", "discussion_reply_user":
 			item.Deadline.State = "not_applicable"
 		}
 	}
@@ -352,7 +375,11 @@ func academicItemFromRaw(owner, connection string, v academicRaw, refs map[strin
 	if academicField(v.fields, "classification_status") == "unsupported_assessment_subtype" || academicField(v.fields, "unit_type") == "assessment_unknown" {
 		missing["assessment_subtype"] = "unsupported_assessment_subtype"
 	}
-	if item.Title == "" {
+	if kind == "discussion_reply_user" {
+		missing["body"] = "not_applicable_roster_metadata_only"
+		// Anonymous/unknown reply authors need not have a display name. The
+		// topic and stable reply ID identify the evidence without fake titles.
+	} else if item.Title == "" {
 		missing["title"] = "source_missing"
 	}
 	if item.Status == "unknown" {
@@ -460,6 +487,39 @@ func buildAcademicProjection(owner, connection, source string, rows []model.Plat
 		if len(teachers) > 0 {
 			details["teachers"] = teachers
 		}
+		if source == "mooc" {
+			if snapshots, ok := v.fields["catalog_sources"].([]any); ok {
+				safeSources := []map[string]any{}
+				for _, snapshot := range snapshots {
+					if len(safeSources) == 2 {
+						break
+					}
+					if m, ok := snapshot.(map[string]any); ok {
+						safe := academicSafeFields(m, append(append([]string{}, academicAssessmentTimeKeys...), "sourceTermId", "sourceCourseId", "source_scope", "catalog_status", "catalog_chapter_count", "body_status", "description_coverage", "description_source_course_id", "teacher_coverage", "courseLoad", "courseStyle", "courseName"))
+						for _, key := range []string{"course_introduction", "requirements", "teachingGoal", "target"} {
+							if value := academicString(m[key]); value != "" && len(value) <= 16384 {
+								safe[key] = value
+							}
+						}
+						if values, ok := m["teachers"].([]any); ok {
+							names := []string{}
+							for _, v := range values {
+								if name, ok := v.(string); ok && len(name) <= 512 && len(names) < 50 {
+									names = append(names, name)
+								}
+							}
+							if len(names) > 0 {
+								safe["teachers"] = names
+							}
+						}
+						if academicField(safe, "sourceTermId") != "" {
+							safeSources = append(safeSources, safe)
+						}
+					}
+				}
+				details["catalog_sources"] = safeSources
+			}
+		}
 		o := model.AcademicOffering{Description: v.body, Details: academicJSON(details), ID: academicID(owner, connection, "offering", ref), CourseID: academicID(owner, connection, "course", c), Source: source, ConnectionID: connection, CourseRef: ref, NativeCourseID: c, NativeClassID: cl, NativeTermID: t, CourseType: academicField(v.fields, "courseType", "course_type"), Name: v.title, Teacher: academicField(v.fields, "teacher", "teacher_name", "teacherName"), School: academicField(v.fields, "school", "school_name"), SourceTerms: terms, Coverage: coverage, RecordID: strconv.FormatInt(row.ID, 10), ObservedAt: row.ObservedAt}
 		if o.Teacher == "" {
 			o.Teacher = strings.Join(teachers, "、")
@@ -477,9 +537,29 @@ func buildAcademicProjection(owner, connection, source string, rows []model.Plat
 	}
 	items := map[string]model.AcademicItem{}
 	resourceCounts := map[string]map[string]int{}
+	topicCourses := map[string]model.AcademicOffering{}
+	if source == "mooc" {
+		for _, topic := range parsed {
+			if topic.row.Kind == "discussion" {
+				if offering, ok := refs[topic.row.ParentID]; ok {
+					topicCourses[topic.row.ExternalID] = offering
+				}
+			}
+		}
+	}
 	for _, v := range parsed {
 		if v.row.Kind == "course" {
 			continue
+		}
+		if source == "mooc" && v.row.Kind == "discussion_reply_user" {
+			// A roster's ParentID is its topic. Resolve course ownership from
+			// the topic's verified stored course reference, never its title.
+			if academicField(v.fields, "courseId", "course_id") == "" {
+				if offering, ok := topicCourses[v.row.ParentID]; ok {
+					v.fields["courseId"] = offering.NativeCourseID
+					v.fields["termId"] = offering.NativeTermID
+				}
+			}
 		}
 		item := academicItemFromRaw(owner, connection, v, refs)
 		if item.OfferingID != "" {

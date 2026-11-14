@@ -2,11 +2,13 @@
 
 `app` 管理采集时钟与本服务生命周期。采集提交时，`dbbridge` 在同一业务事务内保存脱敏前后快照。v15起，学习通与中国大学MOOC刷新完成后按轮次、用户、来源连接、所属课程开课实例分批；同课跨资源变化一起交给Trigger。学习通课程＋教学班、MOOC课程＋所属期次为身份，SPOC引用源期次不替换所属期次。同名、不同连接、不同教学班/期次不合并。无可靠课程归属的信息按连接单列为unassociated，不猜课程；DWS、U校园及其他来源保持原平台分批规则。
 
-每个已归属课程在同一轮只生成一个批次，不再因100条上限或全局5000条截取而拆散；课程原始事件总量最多700KiB，超过时完整保存在blocked批次并标记COURSE_INPUT_TOO_LARGE，不截断、不偷偷拆批。Trigger课程输入上限768KiB，保存的Trigger实例上下文至少1MiB。未归属组及原平台分批仍每批最多100条、约44KB；超大单条保留为blocked。`batch.scope`冻结课程名称、course_ref、offering_id及connection_id，并随Trigger与Filter输入传递；历史批次scope为空，内容、状态、初筛和产物均保持原样。
+每个已归属课程在同一轮只生成一个批次，不再因100条上限或全局5000条截取而拆散；课程原始事件总量最多8MiB，超过时完整保存在blocked批次并标记COURSE_INPUT_TOO_LARGE，不截断。Trigger按最多100条／128KiB分页检查所有事件，严格验证并按原顺序汇总真实变化ID；存储上限不等于单次模型输入预算，单条仍受实际上下文限制。未归属组及原平台分批仍每批最多100条、约44KB；超大单条保留为blocked。`batch.scope`冻结课程名称、course_ref、offering_id及connection_id，并随Trigger与Filter输入传递；历史批次scope为空，内容、状态、初筛和产物均保持原样。
 
-当前固定为手动模式：刷新只生成 pending 批次。管理员点击后才 pending → queued，四个受控处理槽可并行执行批次，模型HTTP实际并发由独立Provider门限控制。Trigger先整批筛选；相关批次保存校验后的Trigger结果并以`stage=items,status=queued`让出处理槽，队列优先领取尚处于`stage=trigger`的批次，再继续逐项阶段。逐项阶段重新领取会更新attempt并复用Trigger，不再次请求初筛模型。让出时保留待处理事项，取消/失败仍按真实终态记录。每个change都有稳定持久化item_id，IGNORE也保存原因。TRIGGER与UNCERTAIN选中的change逐个进入独立Filter run，防止混合批次泛化。Filter可把一条原文拆为多个parent_item_id子事项，并多次调用Learner/Worker；同Workflow不同事项允许多次执行，仅item/run重复被拒绝。取消原12分钟批次上限，长任务继承宿主context并持续心跳。Trigger 输出严格校验真实变化 ID；Filter 的 Worker 执行引用核对实际子 Run。执行成功与业务 COMPLETED 分别记录。
+当前固定为手动模式：刷新只生成 pending 批次。管理员点击后才 pending → queued，四个受控处理槽可并行执行批次，模型HTTP实际并发由独立Provider门限控制。Trigger先整批筛选；相关批次保存校验后的Trigger结果并以`stage=items,status=queued`让出处理槽，队列优先领取尚处于`stage=trigger`的批次，再继续逐项阶段。逐项阶段重新领取会更新attempt并复用Trigger，不再次请求初筛模型。让出时保留待处理事项，取消/失败仍按真实终态记录。每个change都有稳定持久化item_id，IGNORE也保存原因。TRIGGER与UNCERTAIN选中的变化在明确同一课程、来源及连接且尚未执行时组成有界课程处理组：最多50条、完整编码输入不超过128KiB、证据引用最多100条；完整原文、原生ID及每条源审计项均保留。每组进入一次Filter，可按具体业务拆项，减少同课重复调查；不规定一门课只能有一个Workflow。其他来源、归属不明、单条超限或已有执行历史保持原逐条路径。源审计项关联组的真实运行和结果，不复制路由或伪造完成；组COMPLETED仍要求实际Worker业务COMPLETED。组和业务子项的数量与源记录数分别解读。Filter可把一条原文拆为多个parent_item_id子事项，并多次调用Learner/Worker；同Workflow不同事项允许多次执行，仅item/run重复被拒绝。取消原12分钟批次上限，长任务继承宿主context并持续心跳。Trigger 输出严格校验真实变化 ID；Filter 的 Worker 执行引用核对实际子 Run。执行成功与业务 COMPLETED 分别记录。
 
 Filter 输入的 `content` 是结构化变化数组，每项保留 `change_id`（变化ID）、`record_id`（中心归档ID）、`external_id`（平台原生ID）和 `connection_id`。顶层 `evidence_refs` 继续引用变化ID，`evidence_ref_kind=change_id` 明确其命名空间；`evidence_links` 保留四种ID的映射，并提供按顺序对应的 `change_ids/record_ids/external_ids/connection_ids`。`external_id` 从 after 提取，撤回/删除等缺少 after 时回退 before，缺失则为空，不猜测。读取实际归档应使用现有 `data_query`，对 `platform_records.id` 执行 `eq evidence_links[].record_id`；不能把变化ID当中心记录ID。查询仍按用户与有效连接隔离，`text` 优先返回源记录 `content` 正文，旧记录回退 `text` 字段。
+
+Learner自主决定调查范围、信息取舍和画像组织。`profile_manifest`是可选元数据，省略或null均兼容；给定时仅要求JSON对象，其内部版本、策略、查询、搜索覆盖和维度均开放，不作为创建或交接的业务完整性门槛。不强制六数据集搜索完成、六维覆盖、known来源非空、profile_index或特定主题类别/数量。结构合法不表示调查或事实已经完整。交接仍回读实际Workflow并核对owner、active、entity及version；若选择原子初始化私有记忆，现有种子title/content/source_refs参数、owner ACL、单事务保存及提交后receipt保持不变，不由画像类别推断写入成功。
 
 Filter 同一轮多个 `agent_dispatch` 可最多四路并行；其他工具保持原顺序。同一用户同一 Workflow 在所有 Runtime 入口使用 PostgreSQL 会话 advisory lock 串行，等待锁不占主连接池。子调用继承同一工作流时复用当前执行链持有的锁。获取后再次核验状态与版本。排队不承诺无限等待，仍受调用链截止时间限制。
 

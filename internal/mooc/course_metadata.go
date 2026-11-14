@@ -263,6 +263,7 @@ func extractCourseInfo(body, expectedID string) (map[string]any, error) {
 		f["course_introduction"] = strings.Join(sections, "\n\n")
 		f["description_coverage"] = "official_course_information_sections"
 		f["description_source_course_id"] = expectedID
+		f["body_status"] = "official_course_information_sections"
 	}
 	return f, nil
 }

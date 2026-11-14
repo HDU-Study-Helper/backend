@@ -81,13 +81,8 @@ func TestSpocSyncScansBothTermsWithOriginalReferer(t *testing.T) {
 			calls = append(calls, "page")
 			return response(`window.courseDto={id:"10"};window.termDto={id:"101"};window.moocTermDto={id:"202"};`), nil
 		}
-		if strings.Contains(req.URL.Path, "PostBean.getPostDetailById") {
-			calls = append(calls, "detail")
-			return response(`dwr.engine._remoteHandleCallback('0','0',{id:14,hasFollowed:false});`), nil
-		}
-		if strings.Contains(req.URL.Path, "PostBean.getPaginationReplys") {
-			calls = append(calls, "replies")
-			return response(`dwr.engine._remoteHandleCallback('0','0',{list:[],pageNo:1,totalCount:0,totalPageCount:0});`), nil
+		if strings.Contains(req.URL.Path, "PostBean.") {
+			t.Fatal("automatic discussion sync requested post details or replies", req.URL.Path)
 		}
 		if strings.Contains(req.URL.Path, "getLessonUnitLearnVo") {
 			calls = append(calls, "body")
@@ -108,7 +103,7 @@ func TestSpocSyncScansBothTermsWithOriginalReferer(t *testing.T) {
 	b, _ := json.Marshal(c)
 	raw := base64Cursor(b)
 	rows := []contract.Record{}
-	for i := 0; i < 9; i++ {
+	for i := 0; i < 5; i++ {
 		p, e := a.Sync(context.Background(), scope, s, "discussion", raw)
 		if e != nil {
 			t.Fatal(e)
@@ -116,14 +111,19 @@ func TestSpocSyncScansBothTermsWithOriginalReferer(t *testing.T) {
 		rows = append(rows, p.Records...)
 		raw = p.NextCursor
 		s = p.Session
-		if i < 8 && !p.HasMore {
+		if i < 4 && !p.HasMore {
 			t.Fatal("lost source term")
 		}
-		if i == 8 && p.HasMore {
+		if i == 4 && p.HasMore {
 			t.Fatal("did not finish")
 		}
 	}
-	if strings.Join(calls, ",") != "page,101,body,detail,replies,202,body,detail,replies" || len(rows) != 2 || rows[0].ExternalID == rows[1].ExternalID || rows[0].ParentID != rows[1].ParentID {
+	if strings.Join(calls, ",") != "page,101,body,202,body" || len(rows) != 2 || rows[0].ExternalID == rows[1].ExternalID || rows[0].ParentID != rows[1].ParentID {
 		t.Fatal(calls, rows)
+	}
+	for _, row := range rows {
+		if row.Kind != "discussion" || row.Content != "Discussion body" || row.Fields["reply_collection_policy"] != "disabled_current_user_task_state_only" || row.Fields["reply_coverage"] != "not_requested_current_user_task_state_only" {
+			t.Fatal("root or policy missing", row)
+		}
 	}
 }

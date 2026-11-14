@@ -13,6 +13,23 @@ import (
 
 type knownEvidenceKey struct{}
 type knownAcademicEvidenceKey struct{}
+type knownCourseEvidenceKey struct{}
+type knownAcademicOfferingEvidenceKey struct{}
+
+// These identities can only be established by the host's authorized queries.
+type courseEvidenceReference struct {
+	OwnerID, ConnectionID, Source, RecordID, CourseRef string
+}
+
+type academicOfferingEvidenceReference struct {
+	Course courseEvidenceReference
+	ID     string
+}
+
+func knownCourseEvidence(ctx context.Context) courseEvidenceReference {
+	ref, _ := ctx.Value(knownCourseEvidenceKey{}).(courseEvidenceReference)
+	return ref
+}
 
 type academicEvidenceReferences struct {
 	OwnerID, ConnectionID, RecordID string
@@ -129,13 +146,22 @@ func (s *Service) enrichItemContext(ctx context.Context, b model.ControlBatch, c
 		ctx = context.WithValue(ctx, knownEvidenceKey{}, refs)
 		facts["course"] = course
 		ref, _ := course["external_id"].(string)
+		courseRef := courseEvidenceReference{OwnerID: b.OwnerID, ConnectionID: change.ConnectionID, Source: change.Source, RecordID: change.RecordID, CourseRef: ref}
+		if b.OwnerID != "" && ref != "" {
+			ctx = context.WithValue(ctx, knownCourseEvidenceKey{}, courseRef)
+		}
 		for _, dataset := range catalog {
 			if dataset.Name != "academic_offerings" {
 				continue
 			}
-			q := f.Query{Dataset: "academic_offerings", Fields: []string{"id", "course_ref", "course_name", "native_course_id", "native_class_id", "native_term_id", "course_type", "teacher", "school", "description", "details", "source_terms", "coverage"}, Filters: []f.Filter{{Field: "connection_id", Operator: "eq", Value: change.ConnectionID}, {Field: "course_ref", Operator: "eq", Value: ref}}, Limit: 2}
+			q := f.Query{Dataset: "academic_offerings", Fields: []string{"id", "connection_id", "course_ref", "course_name", "native_course_id", "native_class_id", "native_term_id", "course_type", "teacher", "school", "description", "details", "source_terms", "coverage"}, Filters: []f.Filter{{Field: "connection_id", Operator: "eq", Value: change.ConnectionID}, {Field: "course_ref", Operator: "eq", Value: ref}}, Limit: 2}
 			if page, e := s.Data.Query(lookup, scope, q); e == nil && len(page.Rows) == 1 {
-				facts["academic_offering"] = page.Rows[0]
+				offering := page.Rows[0]
+				id, _ := offering["id"].(string)
+				if b.OwnerID != "" && ref != "" && isAcademicItemID(id) && offering["connection_id"] == change.ConnectionID && offering["course_ref"] == ref {
+					facts["academic_offering"] = offering
+					ctx = context.WithValue(ctx, knownAcademicOfferingEvidenceKey{}, academicOfferingEvidenceReference{Course: courseRef, ID: id})
+				}
 			}
 		}
 		name, _ := course["title"].(string)

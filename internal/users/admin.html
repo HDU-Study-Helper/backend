@@ -146,6 +146,7 @@ async function loadPlatforms(){
    const source=platformDescriptors.find(item=>item.source===c.source),name=source?.name||c.source;
    const label=document.createElement('p');label.textContent=name+' · '+stateName(c.state)+(c.error_code?' · '+c.error_code:'')+(source?.manual_sync_only?' · 仅手动采集':'');const connectionID=document.createElement('span');connectionID.className='connection-id';connectionID.textContent=c.id;label.append(connectionID);row.append(label);
    if((c.state==='pending'||c.state==='scanned')&&source?.qr_login)row.append(button('继续扫码',()=>resumePlatform(c.id)));
+   if(c.enabled&&['chaoxing','mooc'].includes(c.source)&&['active','expired'].includes(c.state))row.append(button('刷新登录会话',async()=>{await api('/platforms/connections/'+encodeURIComponent(c.id)+'/refresh-session','POST');if(platformCurrent(owner,epoch)){await loadPlatforms();platformInfo('登录会话已验证并刷新；采集进度保留。');}}));
    if(c.enabled&&c.state==='active'){
     if(c.source==='jwxt'){
      const year=document.createElement('input');year.type='number';year.min='2000';year.max='2100';year.setAttribute('aria-label','教务学年起始年份');year.style.width='110px';

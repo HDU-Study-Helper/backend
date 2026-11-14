@@ -1,6 +1,6 @@
 # 学习通只读适配器
 
-所有实现仅位于 `internal/chaoxing/**`，使用 `internal/contract/platform.go` 当前可编译接口：`New(contract.Dependencies) (contract.Adapter, error)`、`Describe`、`BeginAuth`、`PollAuth`、`Sync`。根目录旧 CONTRACTS 中较大的目标接口不是本次实现签名。
+所有实现仅位于 `internal/chaoxing/**`，使用 `internal/contract/platform.go` 当前可编译接口：`New(contract.Dependencies) (contract.Adapter, error)`、`Describe`、`BeginAuth`、`PollAuth`、`Sync`，并实现可选 `contract.SessionRefresher.RefreshSession(ctx, scope, session)`。根目录旧 CONTRACTS 中较大的目标接口不是本次实现签名。
 
 ## 能力与验证
 
@@ -44,6 +44,14 @@
 **BeginAuth 返回 `QRImage` 与 `QRMediaType`，QRURL为空。** 中心必须通过当前登录用户专属的图片响应或data URI展示这份官方图片；不能把不含挑战会话cookie的 `/createqr` API URL发给浏览器作为等效二维码。AuthResult.Session/QRImage有JSON排除标记，中心需明确处理图片且不得暴露 Session。敏感会话与游标必须由父层加密；不应给模型、业务记录或日志。二维码成功后清除uuid/enc。
 
 HTTP 429 → ErrRateLimited；401/403/登录重定向/登录HTML → ErrAuthRequired；签名权限页、“参数传递不正确”、未知结构、重复分页、总量变化 → ErrParse；上游非200/网络失败 → ErrUpstream。取消与截止时间返回context错误。错误不附URL、响应体、账号或Cookie。
+
+## 已有会话 Cookie 更新
+
+`RefreshSession` 只接受当前完整 Scope 且 `Authorized=true` 的已有会话。每次显式调用均执行 GET `https://i.chaoxing.com` 和已用于扫码入口的固定 HTTPS Passport `/login?fid=-1&refer=https%3A%2F%2Fi.chaoxing.com`，由官方响应在私有 cookiejar 中设置、覆盖或删除 Cookie，然后以原课程接口的 `parseCourses` 强校验实际授权访问。课程列表允许明确 `result=1/channelList=[]` 的空账号；200 首页、登录表单、任意原始 JSON 或仅有 Cookie 均不足以判定成功。课程核验禁止继续跟随重定向；登录页及明确认证失败返回 `ErrAuthRequired`，未知数据结构仍返回 `ErrParse`，网络、取消、限流、验证码错误保留原语义。
+
+刷新专用客户端仅允许已知 GET 页面之间最多3次重定向：精确 `i.chaoxing.com` 的 `/`、`/base`（可带单一数字 `t`），以及精确 `passport2.chaoxing.com/login`（仅单一 `fid=-1`、指向上述个人主页的 `refer`）。拒绝任意其他超星子域、路径、HTTP、userinfo、非443端口、额外查询键及嵌套任意跳转目标；不执行页面 JS、表单、扫码接口或账号密码登录。刷新前后 `_uid/UID` 如存在必须一致，跨 origin 冲突或账号变化返回 `ErrAuthRequired`，不将其他账号保存到原连接。仍过滤持久化 `k8s`；Set-Cookie 的 Max-Age 优先于 Expires，在接收时转为绝对期限，恢复时不会续命，删除 Cookie 不复活。
+
+机制是已有根登录允许时的官方页面访问和服务端 Cookie 交换，没有发现可证明永久续期的学生端 refresh-token 协议。2026-11-11 匿名只读检查确认官方登录入口返回登录表单，主页重定向至403说明页；匿名静态登录脚本也重定向至403页，因此不据此添加未知 `uservalidate` 等路径。同日宿主通过已有授权连接实际调用平台服务刷新，Chaoxing 耗时2323ms，课程验证通过，结果经宿主加密保存，连接保持 active，checkpoint 不变，无源业务写入及 Cookie 暴露（脱敏回执位于工作区 `.build/cookie-refresh-live.json`）。此检查证明当前已授权会话可完成该流程，尚未证明已失效的课程会话可从残留根 Cookie 恢复，也未证明服务端延长了登录期限。过期根登录、依赖未实现 JS/额外握手的情况仍可能需要用户重新授权。参考官方入口：[个人主页](https://i.chaoxing.com)、[登录页](https://passport2.chaoxing.com/login?fid=-1&refer=https%3A%2F%2Fi.chaoxing.com)，已有仓库研究的主页 `/base` 与课程协议。成功输出只供宿主加密保存，适配器不修改资源游标或数据库。
 
 ## 身份、分页与完整性
 

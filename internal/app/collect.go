@@ -14,8 +14,8 @@ type CollectionResult struct {
 	Failed  bool                  `json:"failed"`
 }
 
-// RunCollectionOnce collects a bounded complete pass without HTTP, timers or Agent
-// workers. Stop the normal API before invoking this explicit experiment entry.
+// RunCollectionOnce collects a bounded complete pass without HTTP, scheduled
+// collection or Agent workers. Stop the normal API before invoking this entry.
 func (a *App) RunCollectionOnce(ctx context.Context) (out CollectionResult, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
@@ -27,7 +27,9 @@ func (a *App) RunCollectionOnce(ctx context.Context) (out CollectionResult, err 
 	}
 	out.RoundID = round
 	ctx = model.WithControlRound(ctx, round)
+	stopHeartbeat := a.control.KeepRefreshAlive(ctx, round)
 	defer func() {
+		stopHeartbeat()
 		out.Results = model.RefreshSnapshot(ctx)
 		out.Failed = err != nil || ctx.Err() != nil
 		cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)

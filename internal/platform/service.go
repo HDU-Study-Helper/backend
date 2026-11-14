@@ -327,22 +327,23 @@ func (s *Service) syncPageResult(ctx context.Context, scope model.DWSScope, reso
 			cursor = string(b)
 			clear(b)
 		}
-		var page contract.Page
-		if year != 0 {
-			reader, ok := a.(contract.AcademicTermReader)
-			if !ok {
-				return contract.ErrUnsupported
+		page, e := s.readWithSessionRecovery(ctx, l, state, a, contract.Session(raw), func(session contract.Session) (contract.Page, error) {
+			if year != 0 {
+				reader, ok := a.(contract.AcademicTermReader)
+				if !ok {
+					return contract.Page{}, contract.ErrUnsupported
+				}
+				return reader.SyncTerm(ctx, adapterScope(scope), session, resource, year, term, cursor)
 			}
-			page, e = reader.SyncTerm(ctx, adapterScope(scope), contract.Session(raw), resource, year, term, cursor)
-		} else if courseID != "" {
-			partitioned, ok := a.(contract.DiscussionPartitioner)
-			if !ok {
-				return contract.ErrUnsupported
+			if courseID != "" {
+				partitioned, ok := a.(contract.DiscussionPartitioner)
+				if !ok {
+					return contract.Page{}, contract.ErrUnsupported
+				}
+				return partitioned.SyncDiscussionCourse(ctx, adapterScope(scope), session, courseID, classID, cursor)
 			}
-			page, e = partitioned.SyncDiscussionCourse(ctx, adapterScope(scope), contract.Session(raw), courseID, classID, cursor)
-		} else {
-			page, e = a.Sync(ctx, adapterScope(scope), contract.Session(raw), resource, cursor)
-		}
+			return a.Sync(ctx, adapterScope(scope), session, resource, cursor)
+		})
 		if e != nil {
 			return e
 		}
@@ -354,7 +355,8 @@ func (s *Service) syncPageResult(ctx context.Context, scope model.DWSScope, reso
 		}
 		records := make([]model.PlatformRecord, 0, len(page.Records))
 		for _, record := range page.Records {
-			if record.ExternalID == "" || record.Kind != resource {
+			isRoster := state.Connection.Source == "mooc" && resource == contract.Discussion && record.Kind == contract.DiscussionReplyUser
+			if record.ExternalID == "" || (record.Kind != resource && !isRoster) {
 				return contract.ErrParse
 			}
 			observed := record.ObservedAt
@@ -370,7 +372,7 @@ func (s *Service) syncPageResult(ctx context.Context, scope model.DWSScope, reso
 				return contract.ErrParse
 			}
 			hash := sha256.Sum256(content)
-			records = append(records, model.PlatformRecord{Source: state.Connection.Source, Kind: string(resource), ExternalID: record.ExternalID, ParentID: record.ParentID, Hash: hex.EncodeToString(hash[:]), Content: content, ObservedAt: observed})
+			records = append(records, model.PlatformRecord{Source: state.Connection.Source, Kind: string(record.Kind), ExternalID: record.ExternalID, ParentID: record.ParentID, Hash: hex.EncodeToString(hash[:]), Content: content, ObservedAt: observed})
 		}
 		updated := page.Session
 		if updated == nil {

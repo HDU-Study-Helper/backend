@@ -70,8 +70,9 @@ func (j *jar) Cookies(u *url.URL) []*http.Cookie { return j.base.Cookies(u) }
 func (j *jar) SetCookies(u *url.URL, cs []*http.Cookie) {
 	j.base.SetCookies(u, cs)
 	for _, c := range cs {
-		// Convert relative lifetime once, while observing Set-Cookie.
-		if c.MaxAge > 0 && c.Expires.IsZero() {
+		// Max-Age takes precedence over Expires. Convert its relative lifetime
+		// once while observing Set-Cookie; restore clears positive MaxAge.
+		if c.MaxAge > 0 {
 			copyCookie := *c
 			copyCookie.Expires = time.Now().Add(time.Duration(c.MaxAge) * time.Second)
 			c = &copyCookie

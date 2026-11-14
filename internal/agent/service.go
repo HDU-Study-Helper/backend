@@ -83,6 +83,34 @@ func (b DispatchBridge) Dispatch(ctx context.Context, e f.ExecutionContext, req 
 		if target.Type == "worker" && e.Scope.WorkflowID == "" {
 			return f.RunResult{}, f.Fail("INVALID_ARGUMENT", "Worker业务调用必须在agent_dispatch顶层提供workflow:{workflow_id,version}；context中的Workflow文本不能绑定执行范围，请使用已核实的ID与整数版本重新派发")
 		}
+		if target.Type == "learner" && e.Scope.WorkflowID != "" {
+			// The builtin binds the selected workflow before dispatch. Resolve the
+			// caller role from its trusted identity, never from model input.
+			caller, lookupErr := service.Registry.Repository.GetAgent(ctx, f.Scope{OwnerID: e.Scope.OwnerID, AgentID: e.Scope.AgentID})
+			if lookupErr != nil {
+				return f.RunResult{}, lookupErr
+			}
+			if caller.Type == "filter" {
+				hint := "课程业务执行应派发Worker，请核实target_agent_id并携带workflow:{workflow_id,version}；Learner创建、更新和管理请求不得绑定workflow，请移除顶层workflow，并通过context.target_workflow_id指定待管理的Workflow"
+				candidates, listErr := service.Registry.Repository.ListAgents(ctx, e.Scope.OwnerID, 100, "")
+				if listErr == nil {
+					id := ""
+					ambiguous := false
+					for _, candidate := range candidates {
+						if candidate.Type == "worker" && candidate.Status == "enabled" {
+							if id != "" {
+								ambiguous = true
+							}
+							id = candidate.ID
+						}
+					}
+					if id != "" && !ambiguous && len(candidates) < 100 {
+						hint += "；本账号已核实Worker的target_agent_id=" + id + "，请使用这个完整ID，不要填worker等角色名，也不要使用Learner的ID。"
+					}
+				}
+				return f.RunResult{}, f.Fail("INVALID_ARGUMENT", hint)
+			}
+		}
 	}
 	req.Trigger = f.AgentDispatch
 	raw, err := json.Marshal(req)

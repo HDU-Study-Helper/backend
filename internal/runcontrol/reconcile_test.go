@@ -5,6 +5,7 @@ import (
 	"academic/backend/internal/agent"
 	"academic/backend/internal/model"
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -58,6 +59,56 @@ func TestReconcileSavedAcademicEvidenceWithoutReplay(t *testing.T) {
 				if err != nil || changed != 0 {
 					t.Fatalf("reconciliation not idempotent: %d %v", changed, err)
 				}
+			}
+		})
+	}
+}
+
+func TestReconcileSavedNestedLearnerResultWithoutReplay(t *testing.T) {
+	for _, mode := range []string{"", "learner_no_change"} {
+		t.Run("nested_"+mode, func(t *testing.T) {
+			s, repo, store, _, batch := newItemsIntegration(t, mode)
+			processIntegrationBatchToTerminal(t, s, store, batch)
+			root := stableItemID(batch.ID, "notice-change")
+			item := store.items[root+":1"]
+			if item.Status != "COMPLETED" {
+				t.Fatal("fixture did not complete", item)
+			}
+			item.Status = "PARTIAL"
+			item.Reason += "；Learner未返回已核验的创建或复用结果"
+			store.items[item.ID] = item
+			outputs := map[string]string{}
+			for id, run := range store.runs {
+				if run.AgentID == "learner" {
+					run.Output = `{"results":[` + run.Output + `]}`
+					store.runs[id] = run
+				}
+				outputs[id] = run.Output
+			}
+			s.Store = &academicReconcileStore{store}
+			runtimeRuns := len(repo.runs)
+			changed, err := s.ReconcileSavedItemResults(context.Background(), item.FilterRunID)
+			if err != nil || changed != 1 || store.items[item.ID].Status != "COMPLETED" {
+				t.Fatalf("changed=%d item=%+v err=%v", changed, store.items[item.ID], err)
+			}
+			var routes []itemRoute
+			if err := json.Unmarshal(store.items[item.ID].Routes, &routes); err != nil {
+				t.Fatal(err)
+			}
+			if len(routes) != 2 || !routes[0].Execution.ServerVerified || routes[0].Execution.ModelVerified == nil || *routes[0].Execution.ModelVerified != (mode == "") {
+				t.Fatalf("verification flags not retained: %+v", routes)
+			}
+			if len(repo.runs) != runtimeRuns || len(store.runs) != len(outputs) {
+				t.Fatal("reconcile replayed runtime")
+			}
+			for id, output := range outputs {
+				if store.runs[id].Output != output {
+					t.Fatal("reconcile changed saved output", id)
+				}
+			}
+			changed, err = s.ReconcileSavedItemResults(context.Background(), item.FilterRunID)
+			if err != nil || changed != 0 {
+				t.Fatalf("reconcile not idempotent: changed=%d err=%v", changed, err)
 			}
 		})
 	}

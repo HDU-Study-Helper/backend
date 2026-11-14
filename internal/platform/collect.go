@@ -14,7 +14,16 @@ import (
 // It preserves committed checkpoints and never retries a failed page. Teaching
 // schedules and on-demand discussion reply-user reads are intentionally excluded.
 func (s *Service) CollectOnce(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	return s.CollectOnceWithTimeout(ctx, 30*time.Minute)
+}
+
+// CollectOnceWithTimeout permits a bounded maintenance pass while preserving the
+// caller's earlier deadline, page budgets, and stop-without-retry behavior.
+func (s *Service) CollectOnceWithTimeout(ctx context.Context, d time.Duration) error {
+	if d <= 0 || d > 4*time.Hour {
+		return contract.ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, d)
 	defer cancel()
 	return s.collectOnce(ctx, 20000, 10000)
 }

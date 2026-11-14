@@ -3,6 +3,7 @@ package mooc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -511,6 +512,41 @@ func readPostDWR(ctx context.Context, h *http.Client, co course, method string, 
 	return readDWRBean(ctx, h, co, "PostBean", method, params)
 }
 func readDWRBean(ctx context.Context, h *http.Client, co course, bean, method string, params []string) (any, error) {
+	attempts := 1
+	if bean == "PostBean" && (method == "getPostDetailById" || method == "getPaginationReplys") {
+		attempts = 2
+	}
+	for attempt := 0; ; attempt++ {
+		if e := ctx.Err(); e != nil {
+			return nil, e
+		}
+		v, e := readDWRBeanOnce(ctx, h, co, bean, method, params)
+		if e == nil {
+			return v, nil
+		}
+		if parentErr := ctx.Err(); parentErr != nil {
+			return nil, parentErr
+		}
+		// A per-attempt deadline may retry while the caller's context is active.
+		// Generic upstream errors include remote exceptions and must not retry.
+		if attempt+1 == attempts || (!errors.Is(e, errTransientRead) && !errors.Is(e, context.DeadlineExceeded)) {
+			if errors.Is(e, errTransientRead) {
+				return nil, contract.ErrUpstream
+			}
+			return nil, e
+		}
+		timer := time.NewTimer(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// Each attempt rebuilds the request using the current cookie jar and CSRF token.
+func readDWRBeanOnce(ctx context.Context, h *http.Client, co course, bean, method string, params []string) (any, error) {
 	u, _ := url.Parse(origin)
 	session := ""
 	for _, c := range h.Jar.Cookies(u) {
@@ -544,7 +580,10 @@ func readDWRBean(ctx context.Context, h *http.Client, co course, bean, method st
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, contract.ErrUpstream
+		if errors.Is(e, context.Canceled) {
+			return nil, context.Canceled
+		}
+		return nil, errTransientRead
 	}
 	defer res.Body.Close()
 	if res.StatusCode == 401 || res.StatusCode == 403 {
@@ -553,12 +592,21 @@ func readDWRBean(ctx context.Context, h *http.Client, co course, bean, method st
 	if res.StatusCode == 429 {
 		return nil, contract.ErrRateLimited
 	}
+	if res.StatusCode == 408 || res.StatusCode == 502 || res.StatusCode == 503 || res.StatusCode == 504 {
+		return nil, errTransientRead
+	}
 	if res.StatusCode != 200 {
 		return nil, contract.ErrUpstream
 	}
 	b, e := io.ReadAll(io.LimitReader(res.Body, maxBody+1))
 	if e != nil {
-		return nil, contract.ErrUpstream
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if errors.Is(e, context.Canceled) {
+			return nil, context.Canceled
+		}
+		return nil, errTransientRead
 	}
 	v, e := parseDWR(string(b))
 	if e != nil && method == "getLessonUnitLearnVo" {

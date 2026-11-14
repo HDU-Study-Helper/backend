@@ -16,13 +16,16 @@ import (
 // Node describes a readable directory. Indices refer to the unchanged tree arrays.
 // Native identities remain in the records rather than becoming directory names.
 type Node struct {
-	Label    string  `json:"label"`
-	Offering *int    `json:"offering,omitempty"`
-	Item     *int    `json:"item,omitempty"`
-	Children []*Node `json:"children,omitempty"`
-	Count    int     `json:"count"`
-	key      string
-	index    map[string]*Node
+	Label      string         `json:"label"`
+	Offering   *int           `json:"offering,omitempty"`
+	Item       *int           `json:"item,omitempty"`
+	Children   []*Node        `json:"children,omitempty"`
+	Count      int            `json:"count"`
+	KindCounts map[string]int `json:"kind_counts,omitempty"`
+	key        string
+	index      map[string]*Node
+	position   *float64
+	rank       int
 }
 
 func line(s string) string {
@@ -222,8 +225,94 @@ func offeringName(o model.AcademicOffering) string {
 	return strings.Join(parts, " · ")
 }
 
-// Directory groups every record by source, connection, offering, category and
-// source-provided chapter/lesson path. It neither truncates nor infers associations.
+// directoryMetadata contains only source-provided identities and ordering. A
+// display title never replaces an available native ID.
+type directoryMetadata struct {
+	PathIDs      []string `json:"path_ids"`
+	NodeID       string   `json:"nodeId"`
+	LegacyNodeID string   `json:"node_id"`
+	ParentNodeID string   `json:"parent_node_id"`
+	Position     *float64 `json:"position"`
+	Order        *float64 `json:"order"`
+	TopicID      string   `json:"topic_id"`
+	RootID       string   `json:"root_discussion_id"`
+	PostID       string   `json:"postId"`
+}
+
+func directoryMeta(item model.AcademicItem) directoryMetadata {
+	var m directoryMetadata
+	_ = json.Unmarshal(item.Metadata, &m)
+	if m.NodeID == "" {
+		m.NodeID = m.LegacyNodeID
+	}
+	if m.Position == nil {
+		m.Position = m.Order
+	}
+	return m
+}
+
+func catalogItem(item model.AcademicItem) bool {
+	switch item.Kind {
+	case "chapter", "lesson", "material", "resource", "video", "document", "attachment":
+		return true
+	case "assignment", "task", "exam", "discussion":
+		return item.ChapterID != "" || item.LessonID != "" || len(directoryMeta(item).PathIDs) > 1
+	}
+	return false
+}
+
+func categoryRank(label string) int {
+	switch label {
+	case "课程目录与资料":
+		return 1
+	case "作业与任务":
+		return 2
+	case "考试":
+		return 3
+	case "通知":
+		return 4
+	case "讨论":
+		return 5
+	case "讨论参与与回复记录":
+		return 6
+	case "学习进度", "课程学习观察":
+		return 7
+	}
+	return 8
+}
+
+// naturalLess keeps unnumbered titles readable and orders digit runs numerically
+// without parsing opaque IDs or guessing a Chinese chapter number.
+func naturalLess(a, b string) bool {
+	for len(a) > 0 && len(b) > 0 {
+		if a[0] >= '0' && a[0] <= '9' && b[0] >= '0' && b[0] <= '9' {
+			i, j := 0, 0
+			for i < len(a) && a[i] >= '0' && a[i] <= '9' {
+				i++
+			}
+			for j < len(b) && b[j] >= '0' && b[j] <= '9' {
+				j++
+			}
+			x, y := strings.TrimLeft(a[:i], "0"), strings.TrimLeft(b[:j], "0")
+			if len(x) != len(y) {
+				return len(x) < len(y)
+			}
+			if x != y {
+				return x < y
+			}
+			a, b = a[i:], b[j:]
+			continue
+		}
+		if a[0] != b[0] {
+			return a[0] < b[0]
+		}
+		a, b = a[1:], b[1:]
+	}
+	return len(a) < len(b)
+}
+
+// Directory preserves every record once. Explicit catalog identities produce
+// expandable chapter/lesson records; state and participation stay separate.
 func Directory(tree model.AcademicTree) []*Node {
 	root := &Node{Children: []*Node{}}
 	scoped := func(source, connection string) *Node {
@@ -239,29 +328,208 @@ func Directory(tree model.AcademicTree) []*Node {
 		n.Offering = &idx
 		offerings[key(o.Source, o.ConnectionID, o.ID)] = n
 	}
+	// Containers are keyed by offering + source term + native node identity, not
+	// by their readable names. Pre-create them so input order cannot duplicate a
+	// chapter record as both a folder and a leaf.
+	type containerKey struct {
+		parent   *Node
+		term, id string
+	}
+	containers := map[containerKey]*Node{}
+	parents := make([]*Node, len(tree.Items))
 	for i, item := range tree.Items {
 		p := offerings[key(item.Source, item.ConnectionID, item.OfferingID)]
 		if p == nil {
 			p = child(scoped(item.Source, item.ConnectionID), "unassociated", "未关联课程（不推断归属）")
 		}
-		p = child(p, "category:"+category(item.Kind), category(item.Kind))
-		for _, part := range item.Path {
-			if part = line(part); part != "" && part != line(item.Title) {
-				p = child(p, "path:"+part, part)
+		label := category(item.Kind)
+		if catalogItem(item) {
+			label = "课程目录与资料"
+		}
+		p = child(p, "category:"+label, label)
+		p.rank = categoryRank(label)
+		// A referenced source term is not the owner's enrolled term.
+		term := item.SourceTermID
+		if term == "" {
+			term = item.NativeTermID
+		}
+		if item.Source == "mooc" && item.SourceTermID != "" && item.SourceTermID != item.NativeTermID {
+			p = child(p, "source-term:"+item.SourceTermID, "来源期次 "+line(item.SourceTermID))
+		}
+		parents[i] = p
+		if item.Kind != "chapter" && item.Kind != "lesson" {
+			continue
+		}
+		m := directoryMeta(item)
+		id := m.NodeID
+		if item.Kind == "chapter" && item.ChapterID != "" {
+			id = item.ChapterID
+		}
+		if item.Kind == "lesson" && item.LessonID != "" {
+			id = item.LessonID
+		}
+		if id == "" && len(m.PathIDs) > 0 {
+			id = m.PathIDs[len(m.PathIDs)-1]
+		}
+		if id == "" {
+			continue
+		}
+		k := containerKey{p, term, id}
+		if containers[k] == nil {
+			containers[k] = &Node{Label: itemTitle(item), key: "native:" + id}
+		}
+	}
+	topicNames := map[string]string{}
+	for _, item := range tree.Items {
+		if item.Kind == "discussion" {
+			topicNames[key(item.Source, item.ConnectionID, item.NativeID)] = itemTitle(item)
+		}
+	}
+	attached := map[*Node]*Node{}
+	attach := func(p, n *Node) bool {
+		for ancestor := p; ancestor != nil; ancestor = attached[ancestor] {
+			if ancestor == n {
+				return false
 			}
 		}
+		if attached[n] == nil {
+			if p.index == nil {
+				p.index = map[string]*Node{}
+			}
+			p.index[n.key] = n
+			p.Children = append(p.Children, n)
+			attached[n] = p
+		}
+		return true
+	}
+	for i, item := range tree.Items {
+		p, m := parents[i], directoryMeta(item)
+		if item.Kind == "discussion_reply_user" {
+			topic := m.RootID
+			if topic == "" {
+				topic = m.TopicID
+			}
+			if topic == "" {
+				topic = m.PostID
+			}
+			if topic != "" {
+				label := topicNames[key(item.Source, item.ConnectionID, topic)]
+				p = child(p, "topic:"+topic, named(label, "讨论话题 "+line(topic)))
+			}
+			idx := i
+			p.Children = append(p.Children, &Node{Label: itemTitle(item), Item: &idx, position: m.Position})
+			continue
+		}
+		ancestors := map[*Node]bool{p: true}
+		term := item.SourceTermID
+		if term == "" {
+			term = item.NativeTermID
+		}
+		var own *Node
+		ownID := m.NodeID
+		if item.Kind == "chapter" {
+			ownID = item.ChapterID
+		}
+		if item.Kind == "lesson" {
+			ownID = item.LessonID
+		}
+		if ownID == "" {
+			ownID = m.NodeID
+		}
+		if ownID == "" && (item.Kind == "chapter" || item.Kind == "lesson") && len(m.PathIDs) > 0 {
+			ownID = m.PathIDs[len(m.PathIDs)-1]
+		}
+		if item.Kind == "chapter" || item.Kind == "lesson" {
+			own = containers[containerKey{parents[i], term, ownID}]
+		}
+		// Prefer explicit native ancestry, using labels only for a missing node.
+		ids := append([]string{}, m.PathIDs...)
+		if len(ids) == 0 && catalogItem(item) {
+			if item.ChapterID != "" {
+				ids = append(ids, item.ChapterID)
+			}
+			if item.LessonID != "" && item.LessonID != item.ChapterID {
+				ids = append(ids, item.LessonID)
+			}
+		}
+		if len(ids) == 0 && m.ParentNodeID != "" && m.ParentNodeID != ownID {
+			ids = append(ids, m.ParentNodeID)
+		}
+		depth := len(item.Path)
+		if len(ids) > depth {
+			depth = len(ids)
+		}
+		for j := 0; j < depth; j++ {
+			id, title := "", ""
+			if j < len(ids) {
+				id = ids[j]
+			}
+			if j < len(item.Path) {
+				title = line(item.Path[j])
+			}
+			// Source paths generally include the current record. Remove only the
+			// terminal segment, so repeated ancestor titles remain intact.
+			if j == depth-1 && ((ownID != "" && id == ownID) || (id != "" && (id == item.UnitID || id == item.ContentID)) || id == "" && title != "" && title == line(item.Title)) {
+				break
+			}
+			if id == "" && title == "" {
+				continue
+			}
+			k := "path:" + title
+			var n *Node
+			if id != "" {
+				k = "native:" + id
+				n = containers[containerKey{parents[i], term, id}]
+			}
+			if n != nil && (n == own || ancestors[n]) {
+				break
+			}
+			if n == nil {
+				n = child(p, k, named(title, "目录节点 "+line(id)))
+			} else if !attach(p, n) {
+				break
+			}
+			ancestors[n] = true
+			p = n
+		}
 		idx := i
-		p.Children = append(p.Children, &Node{Label: itemTitle(item), Item: &idx})
+		if own != nil && own.Item == nil {
+			own.Item, own.Label, own.position = &idx, itemTitle(item), m.Position
+			if !attach(p, own) {
+				// Malformed ancestry must not hide the record or create a cycle.
+				own.Item = nil
+				p.Children = append(p.Children, &Node{Label: itemTitle(item), Item: &idx, position: m.Position})
+			}
+		} else {
+			p.Children = append(p.Children, &Node{Label: itemTitle(item), Item: &idx, position: m.Position})
+		}
 	}
 	var order func(*Node)
 	order = func(n *Node) {
-		sort.SliceStable(n.Children, func(i, j int) bool { return n.Children[i].Label < n.Children[j].Label })
+		sort.SliceStable(n.Children, func(i, j int) bool {
+			a, b := n.Children[i], n.Children[j]
+			if a.rank != b.rank {
+				return a.rank < b.rank
+			}
+			if (a.position != nil) != (b.position != nil) {
+				return a.position != nil
+			}
+			if a.position != nil && b.position != nil && *a.position != *b.position {
+				return *a.position < *b.position
+			}
+			return naturalLess(a.Label, b.Label)
+		})
+		n.KindCounts = map[string]int{}
 		if n.Item != nil {
 			n.Count = 1
+			n.KindCounts[tree.Items[*n.Item].Kind]++
 		}
 		for _, c := range n.Children {
 			order(c)
 			n.Count += c.Count
+			for kind, count := range c.KindCounts {
+				n.KindCounts[kind] += count
+			}
 		}
 	}
 	order(root)

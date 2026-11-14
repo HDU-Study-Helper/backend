@@ -264,7 +264,11 @@ func newItemsIntegration(t *testing.T, mode string) (*Service, *itemsIntegration
 		if mode == "learner_no_change" {
 			status, verified = "NO_CHANGE", false
 		}
-		return itemsFinal(map[string]any{"status": status, "verified": verified, "workflow_id": w.ID, "workflow_version": w.Version}), nil
+		operation := "CREATE"
+		if status == "NO_CHANGE" || status == "NEEDS_INFO" {
+			operation = "NONE"
+		}
+		return itemsFinal(map[string]any{"request_id": nil, "item_id": nil, "parent_item_id": nil, "entity": nil, "status": status, "operation": operation, "verified": verified, "workflow_id": w.ID, "workflow_version": w.Version, "summary": "Workflow管理结果", "reason": "按测试场景保留真实管理状态和核验标记", "evidence_refs": []any{}, "changes": []any{}, "questions": []any{}, "suggestions": []any{}}), nil
 	})
 	providers["worker"] = itemsIntegrationModel(func(_ context.Context, r f.ModelRequest) (f.ModelResponse, error) {
 		results := itemsToolResults(t, r)
@@ -276,7 +280,24 @@ func newItemsIntegration(t *testing.T, mode string) (*Service, *itemsIntegration
 		if len(result.Rows) != 1 || result.Rows[0]["text"] == "" {
 			t.Fatal("Worker did not read actual mock source")
 		}
-		return itemsFinal(map[string]any{"status": "COMPLETED", "summary": "已精确核查课程事项", "artifacts": []map[string]any{{"type": "SUMMARY", "title": "课程处理结果", "description": "已读取原通知"}}}), nil
+		input := itemsUserInput(t, r)
+		var workflow f.WorkflowSelection
+		if err := json.Unmarshal(input["workflow"], &workflow); err != nil {
+			t.Fatal(err)
+		}
+		var runID string
+		for _, message := range r.Messages {
+			if message.Role == "system" {
+				_, suffix, found := strings.Cut(message.Content, "Trusted run_id=")
+				if found {
+					runID, _, _ = strings.Cut(suffix, ";")
+				}
+			}
+		}
+		if runID == "" {
+			t.Fatal("missing trusted runtime identity")
+		}
+		return itemsFinal(map[string]any{"run_id": runID, "workflow_id": workflow.ID, "workflow_version": workflow.Version, "status": "COMPLETED", "summary": "已精确核查课程事项", "artifacts": []map[string]any{{"type": "SUMMARY", "title": "课程处理结果", "description": "已读取原通知", "entity_ref": nil, "data": map[string]any{"draft": true}}}, "actions": []any{}, "evidence_refs": []any{}, "interaction": nil, "collaboration": nil, "evolution_feedback": []any{}}), nil
 	})
 	providers["filter"] = itemsIntegrationModel(func(_ context.Context, r f.ModelRequest) (f.ModelResponse, error) {
 		input := itemsUserInput(t, r)
@@ -351,9 +372,9 @@ func newItemsIntegration(t *testing.T, mode string) (*Service, *itemsIntegration
 			if mode == "unknown_ref" && i == 0 {
 				refs = []string{"invented-record"}
 			}
-			items = append(items, map[string]any{"item_id": id, "parent_item_id": root, "title": courses[course], "status": "COMPLETED", "reason": "真实Worker已核查", "evidence_refs": refs, "routes": routes})
+			items = append(items, map[string]any{"item_id": id, "parent_item_id": root, "title": courses[course], "status": "COMPLETED", "reason": "真实Worker已核查", "evidence_refs": refs, "routes": routes, "artifacts": []any{}})
 		}
-		items = append(items, map[string]any{"item_id": root + ":5", "parent_item_id": root, "title": "无关致谢", "status": "IGNORED", "reason": "普通致谢没有行动要求", "evidence_refs": []string{"notice-change"}, "routes": []any{}})
+		items = append(items, map[string]any{"item_id": root + ":5", "parent_item_id": root, "title": "无关致谢", "status": "IGNORED", "reason": "普通致谢没有行动要求", "evidence_refs": []string{"notice-change"}, "routes": []any{}, "artifacts": []any{}})
 		return itemsFinal(map[string]any{"items": items}), nil
 	})
 	agents, err := agent.New(agent.Dependencies{Repository: repo, Providers: providers, Backend: agent.BackendServices{Data: data}})

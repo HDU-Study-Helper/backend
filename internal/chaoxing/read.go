@@ -283,7 +283,11 @@ func fetchCourses(ctx context.Context, c *http.Client) ([]course, error) {
 	if e != nil {
 		return nil, e
 	}
-	if e = checked(b); e != nil {
+	return parseCourses(b)
+}
+
+func parseCourses(b []byte) ([]course, error) {
+	if e := checked(b); e != nil {
 		return nil, e
 	}
 	var v struct {

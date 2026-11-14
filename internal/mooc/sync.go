@@ -17,20 +17,21 @@ import (
 )
 
 type course struct {
-	ID           string
-	Term         string
-	School       string
-	Name         string
-	Type         int
-	SourceTerm   string
-	ActiveTerm   string
-	Discovery    string
-	Metadata     map[string]any
-	Discovered   bool
-	ActiveRead   bool
-	InfoPending  bool
-	SourceSchool string
-	CurrentUser  string // official webUser.id; cursor only, never projected as identity
+	ID                  string
+	Term                string
+	School              string
+	Name                string
+	Type                int
+	SourceTerm          string
+	ActiveTerm          string
+	Discovery           string
+	Metadata            map[string]any
+	Discovered          bool
+	ActiveRead          bool
+	InfoPending         bool
+	SupplementalPending bool `json:",omitempty"`
+	SourceSchool        string
+	CurrentUser         string // official webUser.id; cursor only, never projected as identity
 }
 
 func key(parts ...string) string {
@@ -105,7 +106,7 @@ func newCursor(scope contract.Scope, r contract.Resource, raw string) (cursor, e
 		}
 	}
 	// The short-lived discussion v2 used the same wire state. Accept and
-	// normalize it without restarting discovery or discarding pending replies.
+	// normalize it without restarting discovery or discarding pending roots.
 	c.Version = 1
 	return c, nil
 }
@@ -148,6 +149,17 @@ func (c *cursor) nextCourse() {
 	}
 }
 
+// advanceCurrentCourse runs only after all reads for the current source term.
+func (c *cursor) advanceCurrentCourse(co course) {
+	if co.ActiveTerm != "" && co.ActiveTerm != co.Term && !co.ActiveRead {
+		co.SourceTerm = co.ActiveTerm
+		co.ActiveRead = true
+		c.Courses[c.Index] = co
+	} else {
+		c.nextCourse()
+	}
+}
+
 func (a *adapter) Sync(ctx context.Context, scope contract.Scope, session contract.Session, r contract.Resource, raw string) (contract.Page, error) {
 	if e := ctx.Err(); e != nil {
 		return contract.Page{}, e
@@ -173,10 +185,14 @@ func (a *adapter) Sync(ctx context.Context, scope contract.Scope, session contra
 			c.Pending = nil
 			return syncPage(c, records, raw, s, h)
 		}
-		records, e = advanceDiscussion(ctx, h, c.PendingCourse, &c)
-		if e != nil {
-			return contract.Page{}, e
+		// Retire saved reply pagination without another read. Its root already
+		// contains the unit body; retain that record and all later pending work.
+		root := c.Discussion.Root
+		if root.ParentID != c.PendingCourse.ref() || root.Fields["sourceTermId"] != sourceTerm(c.PendingCourse) {
+			return contract.Page{}, contract.ErrInvalid
 		}
+		records = append(records, discussionUnitRecord(root))
+		c.Discussion = nil
 		return syncPage(c, records, raw, s, h)
 	}
 	if len(c.Pending) > 0 {
@@ -194,16 +210,20 @@ func (a *adapter) Sync(ctx context.Context, scope contract.Scope, session contra
 			}
 			c.Pending = c.Pending[1:]
 			if row.Kind == "discussion" {
-				c.Discussion = &discussionCursor{Root: row, Page: 1, Seen: map[string]bool{}}
-			} else {
-				records = append(records, row)
+				row = discussionUnitRecord(row)
 			}
+			records = append(records, row)
 		} else {
 			count := 0
 			for count < len(c.Pending) && count < 500 && !needsUnitBody(c.Pending[count]) {
 				count++
 			}
-			records = append(records, c.Pending[:count]...)
+			for _, row := range c.Pending[:count] {
+				if row.Kind == "discussion" {
+					row = discussionUnitRecord(row)
+				}
+				records = append(records, row)
+			}
 			c.Pending = c.Pending[count:]
 		}
 		return syncPage(c, records, raw, s, h)
@@ -229,6 +249,22 @@ func (a *adapter) Sync(ctx context.Context, scope contract.Scope, session contra
 			}
 			return syncPage(c, records, raw, s, h)
 		}
+		if co.SupplementalPending {
+			switch r {
+			case contract.Exam:
+				records, e = readNewExams(ctx, h, co)
+			case contract.Progress:
+				records, e = readLearningRate(ctx, h, co)
+			default:
+				return contract.Page{}, contract.ErrInvalid
+			}
+			if e != nil {
+				return contract.Page{}, e
+			}
+			co.SupplementalPending = false
+			c.advanceCurrentCourse(co)
+			return syncPage(c, records, raw, s, h)
+		}
 		if r == contract.Course && co.InfoPending {
 			sourceID := text(co.Metadata["sourceCourseId"])
 			if sourceID != co.ID {
@@ -239,8 +275,10 @@ func (a *adapter) Sync(ctx context.Context, scope contract.Scope, session contra
 				return contract.Page{}, e
 			}
 			co.InfoPending = false
+			rec := courseRecord(co)
+			co.Metadata = rec.Fields
 			c.Courses[c.Index] = co
-			records = append(records, courseRecord(co))
+			records = append(records, rec)
 			if co.ActiveTerm != "" && co.ActiveTerm != co.Term && !co.ActiveRead {
 				co.SourceTerm = co.ActiveTerm
 				co.ActiveRead = true
@@ -312,16 +350,11 @@ func (a *adapter) Sync(ctx context.Context, scope contract.Scope, session contra
 			c.PendingCourse = co
 			records = records[:500]
 		}
-		if co.ActiveTerm != "" && co.ActiveTerm != co.Term && !co.ActiveRead {
-			co.SourceTerm = co.ActiveTerm
-			co.ActiveRead = true
+		if r == contract.Exam || r == contract.Progress {
+			co.SupplementalPending = true
 			c.Courses[c.Index] = co
 		} else {
-			c.Index++
-		}
-		if c.Index == len(c.Courses) {
-			c.Courses = nil
-			c.Index = 0
+			c.advanceCurrentCourse(co)
 		}
 	} else if !c.Done {
 		found, more, fingerprint, e := coursePage(ctx, h, c.Type, c.Page)
@@ -361,7 +394,7 @@ func (a *adapter) Sync(ctx context.Context, scope contract.Scope, session contra
 }
 func needsUnitBody(row contract.Record) bool {
 	typ := text(row.Fields["contentType"])
-	return (row.Kind == "material" || row.Kind == "discussion") && row.Fields["source_collection"] == "units" && (typ == "3" || typ == "4" || typ == "6")
+	return (row.Kind == "material" || row.Kind == "discussion") && row.Fields["classification_status"] != "unsupported_assessment_subtype" && row.Fields["source_collection"] == "units" && (typ == "3" || typ == "4" || typ == "6")
 }
 func syncPage(c cursor, records []contract.Record, raw string, s *state, h *http.Client) (contract.Page, error) {
 	var e error
@@ -382,11 +415,41 @@ func syncPage(c cursor, records []contract.Record, raw string, s *state, h *http
 	}
 	return out, nil
 }
+
+// unauthenticatedCoursePanels matches the observed stale-session response only.
+// Missing lists, unknown pagination and nonzero totals remain parse failures.
+func unauthenticatedCoursePanels(result map[string]any, page int) bool {
+	rows, present := result["result"]
+	if !present || rows != nil {
+		return false
+	}
+	if _, present := result["list"]; present {
+		return false
+	}
+	paging := object(result["pagination"])
+	return text(paging["totleCount"]) == "0" && text(paging["totlePageCount"]) == "1" && text(paging["pageIndex"]) == strconv.Itoa(page)
+}
+
 func coursePage(ctx context.Context, h *http.Client, typ, page int) ([]course, bool, string, error) {
-	result, e := rpc(ctx, h, "learnerCourseRpcBean.getMyLearnedCoursePanelList", origin+"/", url.Values{"type": {"30"}, "p": {strconv.Itoa(page)}, "psize": {"8"}, "courseType": {strconv.Itoa(typ)}})
+	result, e := rpc(ctx, h, "learnerCourseRpcBean.getMyLearnedCoursePanelList", origin+"/", coursePanelForm(typ, page))
 	if e != nil {
 		return nil, false, "", e
 	}
+	if unauthenticatedCoursePanels(result, page) {
+		// A stale STUDY_INFO can yield code=0/null/zero totals rather than an
+		// authentication error. The official home read exchanges existing login
+		// cookies through the same-origin changeCookie redirect. Refresh once in
+		// this private jar, then require a normal array response; null is never
+		// accepted as proof of an empty account. Sync saves the refreshed jar.
+		result, e = refreshCoursePanels(ctx, h, typ, page)
+		if e != nil {
+			return nil, false, "", e
+		}
+	}
+	return parseCoursePage(result, typ, page)
+}
+
+func parseCoursePage(result map[string]any, typ, page int) ([]course, bool, string, error) {
 	rows, ok := first(result, "result", "list").([]any)
 	if !ok || len(rows) > 8 {
 		return nil, false, "", contract.ErrParse

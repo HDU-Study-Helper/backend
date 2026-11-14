@@ -9,9 +9,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ControlCourseBatchBytes is the raw event budget for one complete course unit.
-// Oversized units retain every event in a blocked batch and require manual review.
-const ControlCourseBatchBytes = 700 * 1024
+// ControlCourseBatchBytes bounds storage of one complete course unit. Trigger
+// reads this unit in bounded pages; this is not a single model request budget.
+// Larger units retain every event in a blocked batch for explicit review.
+const ControlCourseBatchBytes = 8 << 20
 
 type controlSealEvent struct {
 	id, round, owner, source string

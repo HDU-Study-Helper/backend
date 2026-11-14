@@ -2,15 +2,15 @@ package mooc
 
 import "academic/backend/internal/contract"
 
-var progressKeys = []string{"submitStatus", "userSubmitStatus", "userEffectStatus", "finishStatus", "studentScore", "userScore", "finalMark", "usedTryCount", "finished", "learned", "learnStatus", "progress", "completePercent", "learnTime", "learnCount", "totalLearnedTime", "replyCount", "voteCount", "viewStatus"}
+var progressKeys = []string{"submitStatus", "userSubmitStatus", "userEffectStatus", "finishStatus", "studentScore", "userScore", "finalMark", "usedTryCount", "finished", "learned", "learnStatus", "progress", "completePercent", "learnTime", "learnCount", "totalLearnedTime", "replyCount", "voteCount", "viewStatus", "lessonLearned", "lessonsCount"}
 
 // nativeProgress records field presence, including explicit zero/false, without
 // treating absence, last access, or a score as proof of completion.
 func nativeProgress(f map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, k := range progressKeys {
-		if scalar(f[k]) {
-			out[k] = f[k]
+		if value, exists := f[k]; exists && (scalar(value) || value == nil && (k == "viewStatus" || k == "replyCount")) {
+			out[k] = value
 		}
 	}
 	return out

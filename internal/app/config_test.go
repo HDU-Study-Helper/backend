@@ -8,7 +8,7 @@ import (
 
 func configEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"REFRESH_PAUSED", "AGENT_DEMO_ENABLED", "DATABASE_URL", "HTTP_ADDR", "PUBLIC_ORIGIN", "COOKIE_SECURE", "BOOTSTRAP_ADMIN_USERNAME", "BOOTSTRAP_ADMIN_PASSWORD", "CREDENTIAL_KEY", "DWS_BINARY", "DWS_BINARY_SHA256", "DWS_WORKSPACE_ROOT", "DWS_POLL_INTERVAL", "REFRESH_INTERVAL", "DWS_COMMAND_TIMEOUT"} {
+	for _, key := range []string{"API_ONLY", "REFRESH_PAUSED", "AGENT_DEMO_ENABLED", "DATABASE_URL", "HTTP_ADDR", "PUBLIC_ORIGIN", "COOKIE_SECURE", "BOOTSTRAP_ADMIN_USERNAME", "BOOTSTRAP_ADMIN_PASSWORD", "CREDENTIAL_KEY", "DWS_BINARY", "DWS_BINARY_SHA256", "DWS_WORKSPACE_ROOT", "DWS_POLL_INTERVAL", "REFRESH_INTERVAL", "DWS_COMMAND_TIMEOUT"} {
 		t.Setenv(key, "")
 	}
 	t.Setenv("DATABASE_URL", "postgres://example")
@@ -59,6 +59,23 @@ func TestRefreshPausedConfiguration(t *testing.T) {
 	t.Setenv("REFRESH_PAUSED", "invalid")
 	if _, err = LoadConfig(); err == nil {
 		t.Fatal("invalid pause flag accepted")
+	}
+}
+
+func TestAPIOnlyConfiguration(t *testing.T) {
+	configEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || cfg.APIOnly {
+		t.Fatal("API-only mode must be opt-in", err)
+	}
+	t.Setenv("API_ONLY", "true")
+	cfg, err = LoadConfig()
+	if err != nil || !cfg.APIOnly {
+		t.Fatal("API-only mode not enabled", err)
+	}
+	t.Setenv("API_ONLY", "invalid")
+	if _, err = LoadConfig(); err == nil {
+		t.Fatal("invalid API-only flag accepted")
 	}
 }
 
