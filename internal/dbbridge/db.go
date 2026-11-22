@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	f "academic/agent/framework"
 	"academic/backend/internal/trigger"
 
 	"academic/backend/internal/model"
@@ -20,6 +21,7 @@ import (
 )
 
 type DB struct {
+	defaultRoles   []f.AgentDefinition // immutable after application startup
 	pool           *pgxpool.Pool
 	triggerMu      sync.RWMutex
 	triggerHandler trigger.Handler

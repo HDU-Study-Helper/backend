@@ -21,6 +21,7 @@ type passwordAdapter struct {
 	logins, reads int
 	year, term    int
 	fail          error
+	hasMore       bool
 }
 
 func (*passwordAdapter) Describe() contract.Descriptor {
@@ -46,7 +47,11 @@ func (a *passwordAdapter) SyncTerm(_ context.Context, _ contract.Scope, session 
 	if a.fail != nil {
 		return contract.Page{}, a.fail
 	}
-	return contract.Page{Records: []contract.Record{{Kind: r, ExternalID: "record", ParentID: "semester", Title: "脱敏课程", Fields: map[string]any{"academic_year": year, "term": term}}}}, nil
+	next := ""
+	if a.hasMore {
+		next = "next-page"
+	}
+	return contract.Page{Records: []contract.Record{{Kind: r, ExternalID: "record", ParentID: "semester", Title: "脱敏课程", Fields: map[string]any{"academic_year": year, "term": term}}}, HasMore: a.hasMore, NextCursor: next}, nil
 }
 
 type passwordRepo struct {
@@ -197,6 +202,10 @@ func TestPasswordAndAcademicHTTP(t *testing.T) {
 	}
 	if w = request("/connections/connection/sync", `{"resource":"course","academic_year":2026,"term":1}`, "owner"); w.Code != 200 || r.committed != "course:2026:1" {
 		t.Fatal("manual schedule route failed", w.Code, w.Body.String())
+	}
+	var receipt SyncPageReceipt
+	if json.Unmarshal(w.Body.Bytes(), &receipt) != nil || receipt.Status != "page_committed" || receipt.PageCount != 1 || receipt.HasMore || receipt.AcademicYear != 2026 || receipt.Term != 1 {
+		t.Fatal("missing committed page metadata", w.Body.String())
 	}
 	var record contract.Record
 	if json.Unmarshal(r.commits[0].Content, &record) != nil || record.Kind != contract.Course {

@@ -24,9 +24,12 @@ func TestCourseScopePassesRealRuntimeAndCorrection(t *testing.T) {
 		if json.Unmarshal(input["scope"], &scope) != nil || scope.CourseRef != batch.Scope.CourseRef || scope.CourseName != "具体课程" {
 			t.Fatal("runtime lost course scope")
 		}
-		var changes []model.ControlChange
-		if json.Unmarshal(input["changes"], &changes) != nil || len(changes) != 1 || len(changes[0].After) < 52000 {
-			t.Fatal("runtime truncated evidence")
+		var changes []struct {
+			Index int             `json:"index"`
+			After json.RawMessage `json:"after"`
+		}
+		if json.Unmarshal(input["changes"], &changes) != nil || len(changes) != 1 || changes[0].Index != 1 || len(changes[0].After) < 52000 || string(input["selection_protocol"]) != `"indices_v1"` {
+			t.Fatal("runtime lost index protocol or truncated evidence")
 		}
 		calls++
 		if calls == 1 {
@@ -35,7 +38,7 @@ func TestCourseScopePassesRealRuntimeAndCorrection(t *testing.T) {
 		if len(input["validation_error"]) == 0 {
 			t.Fatal("correction not passed")
 		}
-		return itemsFinal(map[string]any{"decision": "IGNORE", "reason": "无新增要求", "relevant_change_ids": []string{}}), nil
+		return itemsFinal(map[string]any{"decision": "IGNORE", "reason": "无新增要求", "relevant_indices": []int{}}), nil
 	})
 	svc.process(context.Background(), batch)
 	if calls != 2 || store.batches[batch.ID].Status != "ignored" {

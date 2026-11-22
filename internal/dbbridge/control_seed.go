@@ -14,7 +14,11 @@ func (r *controls) SeedRoundItems(ctx context.Context) error {
 	return r.db.transaction(ctx, func(tx pgx.Tx) error { return seedControlItems(ctx, tx) })
 }
 func seedControlItems(ctx context.Context, tx pgx.Tx) error {
-	rows, e := tx.Query(ctx, `SELECT `+batchCols+` FROM control_batches b WHERE EXISTS(SELECT 1 FROM jsonb_array_elements(b.changes) c WHERE NOT EXISTS(SELECT 1 FROM control_items i WHERE i.batch_id=b.id AND i.parent_item_id='' AND i.change_id=c->>'change_id')) ORDER BY b.created_at`)
+	return seedControlRoundItems(ctx, tx, "")
+}
+
+func seedControlRoundItems(ctx context.Context, tx pgx.Tx, round string) error {
+	rows, e := tx.Query(ctx, `SELECT `+batchCols+` FROM control_batches b WHERE ($1='' OR b.round_id=$1) AND EXISTS(SELECT 1 FROM jsonb_array_elements(b.changes) c WHERE NOT EXISTS(SELECT 1 FROM control_items i WHERE i.batch_id=b.id AND i.parent_item_id='' AND i.change_id=c->>'change_id')) ORDER BY b.created_at`, round)
 	if e != nil {
 		return e
 	}
@@ -50,6 +54,9 @@ func seedControlItems(ctx context.Context, tx pgx.Tx) error {
 			if b.Status == "blocked" {
 				status = "FAILED"
 				reason = "输入过大，批次被阻止；原始证据保留"
+				if b.Error == "DWS_GROUP_UNRESOLVED" {
+					reason = "群归属缺失或冲突，批次等待核查；原始证据保留"
+				}
 			}
 			input, _ := json.Marshal(change)
 			refs, _ := json.Marshal([]string{change.ID})

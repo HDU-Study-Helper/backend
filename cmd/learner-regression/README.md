@@ -30,13 +30,13 @@ go run ./cmd/learner-regression --execute --resume-dir '../.build/learner-regres
 
 按外键顺序复制用户、Agent 实例、加密 provider settings、平台/DWS 连接和授权群、原始业务记录、结构化课程/事项/证据、个人状态、日程与 DWS 消息附件。原 ID 保持不变。provider settings 密文原样复制，只由既有 agentadmin/vault 装配解密，不输出密钥。`.build` 中额外保留实例配置与加密 provider settings 的私有备份。平台 session/workspace 密文可能随连接复制，但不会被解密或调用；因此隔离 schema 和全部产物仍包含私人数据，需按原数据库权限保护。
 
-不复制原 Workflow、记忆、Agent Run、control 队列和登录 session，从而真正验证首次初始化。目标复制完成后，仅更新所选用户 Learner 提示词；不改其他角色提示词、模型参数或预算。Learner工具被限制为数据只读、Workflow list/get/create、记忆只读；原子画像创建所需 memory.write 权限保留。使用原始 `db.Agents()`，保留 `WorkflowProfileRepository`/`WorkflowLocker` 等可选接口。未注册日程工具、未装配通知、未开放派发或 Web 工具、未创建平台/采集服务；无作业提交、通知发送或外部平台写入路径。仅真实配置的模型 API 会在 execute 时被调用。
+不复制原 Workflow、记忆、Agent Run、control 队列和登录 session，从而真正验证首次初始化。目标复制完成后，仅更新所选用户 Learner 提示词；不改其他角色提示词、模型参数或预算。Learner工具限制为数据只读、Workflow list/get/create/update、记忆读取及create/update/create_relation，保留原有相应权限；宿主以WithLearnerStage INITIALIZE建立可信暂存入口，选择/新建、定义与记忆编辑均经会话执行，不使用initial_private_memories旧原子种子入口。模型返回READY_TO_COMMIT后由宿主校验并原子提交，兼容APPLIED回执才表示正式初始化完成。使用原始 `db.Agents()`，保留 `WorkflowProfileRepository`/`WorkflowLocker` 等可选接口。未注册日程工具、未装配通知、未开放派发或 Web 工具、未创建平台/采集服务；无作业提交、通知发送或外部平台写入路径。仅真实配置的模型 API 会在 execute 时被调用。
 
 ## 范围和验证
 
 无 `--round` 时枚举全部 active chaoxing/mooc 结构化开课实例。指定轮次时按 `control_batches.batch_scope` 的 connection + offering_id/course_ref 精确选课，不按课程名猜配。历史空 scope 或未关联的记录不会伪造成课程输入；未关联记录仍包含在复制的业务数据中。manifest 的课程清单是完整冻结输入，`--parallel` 默认2、允许1–4；课程可有限并行，实际仍受原 Agent max_concurrent 和 Provider 并发门限约束，不改模型或预算。结果始终按原manifest课程顺序保存，完成顺序不改变输入。新建课程 Workflow/记忆在同一隔离 schema 中保留。
 
-每课保留原始模型请求/响应、输入、Run 记录、错误、持久化校验结果。`requests.jsonl` 包含每次请求大小、历史工具结果字节、耗时、usage 和安全错误；`progress.json` 汇总已完成/核验/失败数量。`results.private.json` 含私人业务结果，只在私有目录保存。模型 run 成功不自动算业务验收：必须返回 APPLIED，回读 active Workflow 的版本和精确课程实体，并读取绑定 Workflow PRI 的有来源 profile_index 和主题记忆；任一不满足记失败，最终非零退出。后端原子创建还执行当前 manifest/种子校验。该校验不证明每个事实语义正确，仍需审查来源与画像覆盖。
+每课保留原始模型请求/响应、输入、Run 记录、错误、持久化校验结果。`requests.jsonl` 包含每次请求大小、历史工具结果字节、耗时、usage 和安全错误；`progress.json` 汇总已完成/核验/失败数量。`results.private.json` 含私人业务结果，只在私有目录保存。模型 run 成功不自动算业务验收：必须返回带verified和commit_receipt的APPLIED初始化结果，提交回执须与目标schema内持久化session ledger一致，operation=CREATE且为COMMITTED；回读active Workflow的版本和精确课程实体，并读取当前有效、有来源的目标Workflow PRI，覆盖回执列出的全部记忆ID。任何不一致记失败，最终非零退出。不强制profile_index、固定主题分类或数量，后端暂存提交负责对象/来源结构及原子保存校验。该校验不证明每个事实语义正确，仍需审查来源与画像覆盖。
 
 可用 `python3 cmd/learner-regression/analyze.py /绝对路径/回归目录` 生成不含课程正文的 `audit.json` 与 `audit.md`：汇总模型/工具次数、查询范围、字段信息增量和峰值请求快照。无持久化 Run 审计的中断案例回退到请求历史并标记 partial，不把缺失的终页结果当作已观察证据。仅连接查询单列；字节数不能等同 token 或 Runtime ContextBytes。
 

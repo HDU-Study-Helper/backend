@@ -43,6 +43,26 @@ func (s *Service) Routes() http.Handler {
 		}
 		httpkit.WriteJSON(w, 200, v)
 	}
+	if first, ok := s.Store.(model.FirstRunRepository); ok {
+		r.Get("/first-run", func(w http.ResponseWriter, r *http.Request) {
+			u, _ := httpkit.CurrentUser(r.Context())
+			v, e := first.FirstStatus(r.Context(), u.ID)
+			respond(w, r, v, e)
+		})
+		r.Post("/first-run", func(w http.ResponseWriter, r *http.Request) {
+			u, _ := httpkit.CurrentUser(r.Context())
+			v, e := first.StartFirst(r.Context(), u.ID)
+			if errors.Is(e, model.ErrNotFound) {
+				httpkit.Error(w, r, 409, "no_selected_courses", "请先导入本学期教务选课列表，再启动首轮")
+				return
+			}
+			if errors.Is(e, model.ErrConflict) {
+				httpkit.Error(w, r, 409, "not_ready", "请先确保有且只有一个已启用的 Learner，再启动首轮")
+				return
+			}
+			respond(w, r, v, e)
+		})
+	}
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		v, e := s.Store.Overview(r.Context())
 		respond(w, r, v, e)

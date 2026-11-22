@@ -1,0 +1,3512 @@
+[
+  {
+    "name": "learner_stage_select",
+    "description": "Select exactly one owned Workflow for this Learner staging session; all of its private memories become readable/editable in this session. Revision calls cannot switch away from the host-authorized target. For initialization use workflow_create to create a staged target, or select an existing candidate.",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "workflow_id": {
+          "description": "Exact owned Workflow ID from workflow_list/get or trusted staging state. Selects one session target; REVISE cannot switch away from its host-authorized target.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow_id"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "base_version": {
+          "description": "Existing Workflow baseline version, or null for a new staged Workflow.",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "committed": {
+          "const": false,
+          "description": "Always false here; only a host commit receipt proves formal persistence.",
+          "type": "boolean"
+        },
+        "completion_blockers": {
+          "description": "Host-detected blockers. Empty does not itself commit or validate every business claim.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "memory_count": {
+          "description": "Count of target Workflow memories in the staging overlay; not a committed write receipt.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Host-authorized path; model input cannot change it.",
+          "enum": [
+            "INITIALIZE",
+            "REVISE"
+          ],
+          "type": "string"
+        },
+        "protocol": {
+          "const": "learner_staging_v2",
+          "description": "Host staging protocol, not a model-selected format.",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Exact server-generated staging session ID; use unchanged in completion marker.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "staged": {
+          "const": true,
+          "description": "This result describes an overlay only.",
+          "type": "boolean"
+        },
+        "staging_revision": {
+          "description": "Exact revision after staged edits. Re-read and use unchanged in final READY_TO_COMMIT marker.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "workflow_id": {
+          "description": "Selected staged Workflow ID, or empty before selection/create. Does not grant unrelated Workflow access.",
+          "maxLength": 128,
+          "type": "string"
+        },
+        "workflow_status": {
+          "description": "Current staged status; empty before selection/create. Initialization must explicitly reach active.",
+          "enum": [
+            "",
+            "draft",
+            "active",
+            "archived"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol",
+        "session_id",
+        "path",
+        "workflow_id",
+        "workflow_status",
+        "memory_count",
+        "base_version",
+        "staging_revision",
+        "staged",
+        "committed",
+        "completion_blockers"
+      ],
+      "type": "object"
+    },
+    "permissions": [
+      "workflow.read"
+    ],
+    "timeout": 0
+  },
+  {
+    "name": "learner_stage_state",
+    "description": "Read trusted session_id, selected workflow_id, base_version and staging_revision. Read this after edits and use the exact revision in the final READY_TO_COMMIT marker. Staged data is not committed.",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "base_version": {
+          "description": "Existing Workflow baseline version, or null for a new staged Workflow.",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "committed": {
+          "const": false,
+          "description": "Always false here; only a host commit receipt proves formal persistence.",
+          "type": "boolean"
+        },
+        "completion_blockers": {
+          "description": "Host-detected blockers. Empty does not itself commit or validate every business claim.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "memory_count": {
+          "description": "Count of target Workflow memories in the staging overlay; not a committed write receipt.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Host-authorized path; model input cannot change it.",
+          "enum": [
+            "INITIALIZE",
+            "REVISE"
+          ],
+          "type": "string"
+        },
+        "protocol": {
+          "const": "learner_staging_v2",
+          "description": "Host staging protocol, not a model-selected format.",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Exact server-generated staging session ID; use unchanged in completion marker.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "staged": {
+          "const": true,
+          "description": "This result describes an overlay only.",
+          "type": "boolean"
+        },
+        "staging_revision": {
+          "description": "Exact revision after staged edits. Re-read and use unchanged in final READY_TO_COMMIT marker.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "workflow_id": {
+          "description": "Selected staged Workflow ID, or empty before selection/create. Does not grant unrelated Workflow access.",
+          "maxLength": 128,
+          "type": "string"
+        },
+        "workflow_status": {
+          "description": "Current staged status; empty before selection/create. Initialization must explicitly reach active.",
+          "enum": [
+            "",
+            "draft",
+            "active",
+            "archived"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol",
+        "session_id",
+        "path",
+        "workflow_id",
+        "workflow_status",
+        "memory_count",
+        "base_version",
+        "staging_revision",
+        "staged",
+        "committed",
+        "completion_blockers"
+      ],
+      "type": "object"
+    },
+    "permissions": null,
+    "timeout": 0,
+    "read_only": true
+  },
+  {
+    "name": "notice_create",
+    "description": "Record a local active/silent notice based on cited evidence and model rationale. due_at queues instead; no external push or delivery claim.",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "Details, notice text, or bounded self-run task.",
+          "maxLength": 8192,
+          "minLength": 1,
+          "type": "string"
+        },
+        "due_at": {
+          "description": "RFC3339 instant with explicit offset; omit unknown todo deadlines.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "evidence": {
+          "description": "Source references or short citations supporting this action; not independent verification of a claim.",
+          "items": {
+            "description": "Source record reference or short citation; do not invent evidence.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "type": "array"
+        },
+        "idempotency_key": {
+          "description": "Stable request identifier; reuse only for identical arguments. Use a new key for a new revision.",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "intent_quote": {
+          "description": "Active only: verbatim user instruction, not a severity estimate. If no instruction use silent.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        "intent_turn_id": {
+          "description": "Active only: raw ID of authenticated owner's Chat turn or answered ChA/ChB question containing the reminder instruction; never quote model text.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "mode": {
+          "description": "Local presentation only: active requires a genuine user instruction; silent does not interrupt.",
+          "enum": [
+            "active",
+            "silent"
+          ],
+          "type": "string"
+        },
+        "preference_memory_id": {
+          "description": "Required for recurring active notices: active personal memory with source_refs containing chat_turn:\u003cturn ID\u003e or question_answer:\u003cChA/ChB question ID\u003e for the actual user instruction.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "description": "Explain why the cited evidence warrants this interruption mode.",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reminder_key": {
+          "description": "Stable owner-scoped identity for this reminder across channels; keep unchanged on retries or deadline changes.",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "repeat_weekly": {
+          "description": "Repeat at the same local weekday/time, only after successful execution.",
+          "type": "boolean"
+        },
+        "timezone": {
+          "description": "IANA zone required for weekly recurrence, e.g. Asia/Shanghai.",
+          "maxLength": 80,
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "description": "Concise user-visible title.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "title",
+        "body",
+        "mode",
+        "reason",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Persisted item ID",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "input": {
+          "description": "Stored action fields and citations; not authorization to execute a different action.",
+          "type": "object"
+        },
+        "kind": {
+          "description": "Persisted local entity category. Use kind with id for scoped readback.",
+          "enum": [
+            "todo",
+            "notice",
+            "job"
+          ],
+          "type": "string"
+        },
+        "result": {
+          "description": "Bounded actual tool result or receipt from due execution when available.",
+          "type": "object"
+        },
+        "result_ref": {
+          "description": "Reference to recorded local result, or safe state/failure marker; never a push receipt.",
+          "type": "string"
+        },
+        "source_agent_id": {
+          "description": "Trusted creator or updating agent",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "source_run_id": {
+          "description": "Trusted originating run",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "status": {
+          "description": "Persisted local state; recorded is not external delivery.",
+          "enum": [
+            "open",
+            "complete",
+            "recorded",
+            "pending",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        "updated_at": {
+          "description": "Timestamp of the persisted change (RFC3339).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "status",
+        "input",
+        "source_run_id",
+        "source_agent_id",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "permissions": [
+      "notice.write"
+    ],
+    "timeout": 0
+  },
+  {
+    "name": "notice_list",
+    "description": "List recorded local notices, not delivery receipts.",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "description": "Maximum rows returned, default 20, maximum 100.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Zero-based offset in newest-change-first order; advance by number of returned items.",
+          "maximum": 100000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "description": "Current-owner results in descending update-time order; empty array when none.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "description": "Persisted item ID",
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              "input": {
+                "description": "Stored action fields and citations; not authorization to execute a different action.",
+                "type": "object"
+              },
+              "kind": {
+                "description": "Persisted local entity category. Use kind with id for scoped readback.",
+                "enum": [
+                  "todo",
+                  "notice",
+                  "job"
+                ],
+                "type": "string"
+              },
+              "result": {
+                "description": "Bounded actual tool result or receipt from due execution when available.",
+                "type": "object"
+              },
+              "result_ref": {
+                "description": "Reference to recorded local result, or safe state/failure marker; never a push receipt.",
+                "type": "string"
+              },
+              "source_agent_id": {
+                "description": "Trusted creator or updating agent",
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              "source_run_id": {
+                "description": "Trusted originating run",
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              "status": {
+                "description": "Persisted local state; recorded is not external delivery.",
+                "enum": [
+                  "open",
+                  "complete",
+                  "recorded",
+                  "pending",
+                  "running",
+                  "succeeded",
+                  "failed",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "updated_at": {
+                "description": "Timestamp of the persisted change (RFC3339).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "status",
+              "input",
+              "source_run_id",
+              "source_agent_id",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "permissions": [
+      "notice.read"
+    ],
+    "timeout": 0,
+    "read_only": true
+  },
+  {
+    "name": "planned_job_cancel",
+    "description": "Cancel a pending job. Running jobs cannot be cancelled here.",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "ID of the persisted current-owner item.",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Persisted item ID",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "input": {
+          "description": "Stored action fields and citations; not authorization to execute a different action.",
+          "type": "object"
+        },
+        "kind": {
+          "description": "Persisted local entity category. Use kind with id for scoped readback.",
+          "enum": [
+            "todo",
+            "notice",
+            "job"
+          ],
+          "type": "string"
+        },
+        "result": {
+          "description": "Bounded actual tool result or receipt from due execution when available.",
+          "type": "object"
+        },
+        "result_ref": {
+          "description": "Reference to recorded local result, or safe state/failure marker; never a push receipt.",
+          "type": "string"
+        },
+        "source_agent_id": {
+          "description": "Trusted creator or updating agent",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "source_run_id": {
+          "description": "Trusted originating run",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "status": {
+          "description": "Persisted local state; recorded is not external delivery.",
+          "enum": [
+            "open",
+            "complete",
+            "recorded",
+            "pending",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        "updated_at": {
+          "description": "Timestamp of the persisted change (RFC3339).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "status",
+        "input",
+        "source_run_id",
+        "source_agent_id",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "permissions": [
+      "job.write"
+    ],
+    "timeout": 0
+  },
+  {
+    "name": "planned_job_create",
+    "description": "Schedule one Notice (title/body/mode/reason), local ToolCall (allowlisted tool/arguments) or Worker self-run (body). Weekly recurrence needs timezone. Target grants are checked again when due.",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "additionalProperties": false,
+          "description": "Strict target-specific JSON object. No identity, bridge operation, or target-request key.",
+          "properties": {
+            "body": {
+              "description": "Optional public_todo_upsert details.",
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            },
+            "due_at": {
+              "description": "Optional todo deadline (not the parent job's due_at).",
+              "format": "date-time",
+              "type": "string"
+            },
+            "id": {
+              "description": "Required for schedule_get or public_todo_complete; for lists use {}.",
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": {
+              "description": "Required for public_todo_upsert.",
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            "todo_key": {
+              "description": "Required for public_todo_upsert.",
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "body": {
+          "description": "Details, notice text, or bounded self-run task.",
+          "maxLength": 8192,
+          "minLength": 1,
+          "type": "string"
+        },
+        "due_at": {
+          "description": "RFC3339 instant with explicit offset; omit unknown todo deadlines.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "evidence": {
+          "description": "Source references or short citations supporting this action; not independent verification of a claim.",
+          "items": {
+            "description": "Source record reference or short citation; do not invent evidence.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "type": "array"
+        },
+        "idempotency_key": {
+          "description": "Stable request identifier; reuse only for identical arguments. Use a new key for a new revision.",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "intent_quote": {
+          "description": "Active only: verbatim user instruction, not a severity estimate. If no instruction use silent.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        "intent_turn_id": {
+          "description": "Active only: raw ID of authenticated owner's Chat turn or answered ChA/ChB question containing the reminder instruction; never quote model text.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "job_kind": {
+          "description": "Choose a recorded notice, allowlisted tool, or an originating Worker self-run.",
+          "enum": [
+            "Notice",
+            "ToolCall",
+            "Worker"
+          ],
+          "type": "string"
+        },
+        "mode": {
+          "description": "Local presentation only: active requires a genuine user instruction; silent does not interrupt.",
+          "enum": [
+            "active",
+            "silent"
+          ],
+          "type": "string"
+        },
+        "preference_memory_id": {
+          "description": "Required for recurring active notices: active personal memory with source_refs containing chat_turn:\u003cturn ID\u003e or question_answer:\u003cChA/ChB question ID\u003e for the actual user instruction.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "description": "Explain why the cited evidence warrants this interruption mode.",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reminder_key": {
+          "description": "Stable owner-scoped identity for this reminder across channels; keep unchanged on retries or deadline changes.",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "repeat_weekly": {
+          "description": "Repeat at the same local weekday/time, only after successful execution.",
+          "type": "boolean"
+        },
+        "timezone": {
+          "description": "IANA zone required for weekly recurrence, e.g. Asia/Shanghai.",
+          "maxLength": 80,
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "description": "Concise user-visible title.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "tool": {
+          "description": "For ToolCall only: one of the explicitly enumerated targets; current grants are rechecked when due.",
+          "enum": [
+            "notice_list",
+            "public_todo_list",
+            "schedule_get",
+            "public_todo_upsert",
+            "public_todo_complete"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "job_kind",
+        "due_at",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Persisted item ID",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "input": {
+          "description": "Stored action fields and citations; not authorization to execute a different action.",
+          "type": "object"
+        },
+        "kind": {
+          "description": "Persisted local entity category. Use kind with id for scoped readback.",
+          "enum": [
+            "todo",
+            "notice",
+            "job"
+          ],
+          "type": "string"
+        },
+        "result": {
+          "description": "Bounded actual tool result or receipt from due execution when available.",
+          "type": "object"
+        },
+        "result_ref": {
+          "description": "Reference to recorded local result, or safe state/failure marker; never a push receipt.",
+          "type": "string"
+        },
+        "source_agent_id": {
+          "description": "Trusted creator or updating agent",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "source_run_id": {
+          "description": "Trusted originating run",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "status": {
+          "description": "Persisted local state; recorded is not external delivery.",
+          "enum": [
+            "open",
+            "complete",
+            "recorded",
+            "pending",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        "updated_at": {
+          "description": "Timestamp of the persisted change (RFC3339).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "status",
+        "input",
+        "source_run_id",
+        "source_agent_id",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "permissions": [
+      "job.write"
+    ],
+    "timeout": 0
+  },
+  {
+    "name": "planned_job_list",
+    "description": "List persisted planned jobs, due dates, states and actual result references.",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "description": "Maximum rows returned, default 20, maximum 100.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Zero-based offset in newest-change-first order; advance by number of returned items.",
+          "maximum": 100000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "description": "Current-owner results in descending update-time order; empty array when none.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "description": "Persisted item ID",
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              "input": {
+                "description": "Stored action fields and citations; not authorization to execute a different action.",
+                "type": "object"
+              },
+              "kind": {
+                "description": "Persisted local entity category. Use kind with id for scoped readback.",
+                "enum": [
+                  "todo",
+                  "notice",
+                  "job"
+                ],
+                "type": "string"
+              },
+              "result": {
+                "description": "Bounded actual tool result or receipt from due execution when available.",
+                "type": "object"
+              },
+              "result_ref": {
+                "description": "Reference to recorded local result, or safe state/failure marker; never a push receipt.",
+                "type": "string"
+              },
+              "source_agent_id": {
+                "description": "Trusted creator or updating agent",
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              "source_run_id": {
+                "description": "Trusted originating run",
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              "status": {
+                "description": "Persisted local state; recorded is not external delivery.",
+                "enum": [
+                  "open",
+                  "complete",
+                  "recorded",
+                  "pending",
+                  "running",
+                  "succeeded",
+                  "failed",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "updated_at": {
+                "description": "Timestamp of the persisted change (RFC3339).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "status",
+              "input",
+              "source_run_id",
+              "source_agent_id",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "permissions": [
+      "job.read"
+    ],
+    "timeout": 0,
+    "read_only": true
+  },
+  {
+    "name": "public_todo_complete",
+    "description": "Mark one current-owner public todo complete; repeating has no effect.",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "ID of the persisted current-owner item.",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Persisted item ID",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "input": {
+          "description": "Stored action fields and citations; not authorization to execute a different action.",
+          "type": "object"
+        },
+        "kind": {
+          "description": "Persisted local entity category. Use kind with id for scoped readback.",
+          "enum": [
+            "todo",
+            "notice",
+            "job"
+          ],
+          "type": "string"
+        },
+        "result": {
+          "description": "Bounded actual tool result or receipt from due execution when available.",
+          "type": "object"
+        },
+        "result_ref": {
+          "description": "Reference to recorded local result, or safe state/failure marker; never a push receipt.",
+          "type": "string"
+        },
+        "source_agent_id": {
+          "description": "Trusted creator or updating agent",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "source_run_id": {
+          "description": "Trusted originating run",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "status": {
+          "description": "Persisted local state; recorded is not external delivery.",
+          "enum": [
+            "open",
+            "complete",
+            "recorded",
+            "pending",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        "updated_at": {
+          "description": "Timestamp of the persisted change (RFC3339).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "status",
+        "input",
+        "source_run_id",
+        "source_agent_id",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "permissions": [
+      "todo.write"
+    ],
+    "timeout": 0
+  },
+  {
+    "name": "public_todo_list",
+    "description": "List current owner's shared todos; newest changes first. Paginate with limit/offset.",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "description": "Maximum rows returned, default 20, maximum 100.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Zero-based offset in newest-change-first order; advance by number of returned items.",
+          "maximum": 100000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "description": "Current-owner results in descending update-time order; empty array when none.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "description": "Persisted item ID",
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              "input": {
+                "description": "Stored action fields and citations; not authorization to execute a different action.",
+                "type": "object"
+              },
+              "kind": {
+                "description": "Persisted local entity category. Use kind with id for scoped readback.",
+                "enum": [
+                  "todo",
+                  "notice",
+                  "job"
+                ],
+                "type": "string"
+              },
+              "result": {
+                "description": "Bounded actual tool result or receipt from due execution when available.",
+                "type": "object"
+              },
+              "result_ref": {
+                "description": "Reference to recorded local result, or safe state/failure marker; never a push receipt.",
+                "type": "string"
+              },
+              "source_agent_id": {
+                "description": "Trusted creator or updating agent",
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              "source_run_id": {
+                "description": "Trusted originating run",
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              "status": {
+                "description": "Persisted local state; recorded is not external delivery.",
+                "enum": [
+                  "open",
+                  "complete",
+                  "recorded",
+                  "pending",
+                  "running",
+                  "succeeded",
+                  "failed",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "updated_at": {
+                "description": "Timestamp of the persisted change (RFC3339).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "status",
+              "input",
+              "source_run_id",
+              "source_agent_id",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "permissions": [
+      "todo.read"
+    ],
+    "timeout": 0,
+    "read_only": true
+  },
+  {
+    "name": "public_todo_upsert",
+    "description": "Create or revise a persistent current-owner public todo. Keep todo_key stable across channels/changes. Omitted body/deadline and existing completion are preserved.",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "Details, notice text, or bounded self-run task.",
+          "maxLength": 8192,
+          "minLength": 1,
+          "type": "string"
+        },
+        "due_at": {
+          "description": "RFC3339 instant with explicit offset; omit unknown todo deadlines.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "evidence": {
+          "description": "Source references or short citations supporting this action; not independent verification of a claim.",
+          "items": {
+            "description": "Source record reference or short citation; do not invent evidence.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "type": "array"
+        },
+        "idempotency_key": {
+          "description": "Stable request identifier; reuse only for identical arguments. Use a new key for a new revision.",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "description": "Concise user-visible title.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "todo_key": {
+          "description": "Stable real-world task identity, shared across channels and deadline changes.",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "todo_key",
+        "title",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Persisted item ID",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "input": {
+          "description": "Stored action fields and citations; not authorization to execute a different action.",
+          "type": "object"
+        },
+        "kind": {
+          "description": "Persisted local entity category. Use kind with id for scoped readback.",
+          "enum": [
+            "todo",
+            "notice",
+            "job"
+          ],
+          "type": "string"
+        },
+        "result": {
+          "description": "Bounded actual tool result or receipt from due execution when available.",
+          "type": "object"
+        },
+        "result_ref": {
+          "description": "Reference to recorded local result, or safe state/failure marker; never a push receipt.",
+          "type": "string"
+        },
+        "source_agent_id": {
+          "description": "Trusted creator or updating agent",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "source_run_id": {
+          "description": "Trusted originating run",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "status": {
+          "description": "Persisted local state; recorded is not external delivery.",
+          "enum": [
+            "open",
+            "complete",
+            "recorded",
+            "pending",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        "updated_at": {
+          "description": "Timestamp of the persisted change (RFC3339).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "status",
+        "input",
+        "source_run_id",
+        "source_agent_id",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "permissions": [
+      "todo.write"
+    ],
+    "timeout": 0
+  },
+  {
+    "name": "schedule_create",
+    "description": "为当前用户创建单次日程。必须明确学年、学期、教学周、带时区起止时间与标题；时间精确到分钟，时长不超过7天。来源为AGENT，初始event_status=INCOMPLETE、active=true；不推断校历、不发送通知。超时或响应未知先核对，不盲重试。",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "academic_year": {
+          "description": "Academic year starting year; 2026 means academic year 2026–2027. Must come from the user's actual calendar, not an inferred year.",
+          "maximum": 2100,
+          "minimum": 2000,
+          "type": "integer"
+        },
+        "details": {
+          "default": "",
+          "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+          "maxLength": 16384,
+          "type": "string"
+        },
+        "end_time": {
+          "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "start_time": {
+          "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "teaching_week": {
+          "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+          "maximum": 60,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "term": {
+          "description": "Academic term: 1 or 2, used with academic_year.",
+          "maximum": 2,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "title": {
+          "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+          "maxLength": 1000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "academic_year",
+        "term",
+        "teaching_week",
+        "start_time",
+        "end_time",
+        "title"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "academic_year": {
+          "description": "Academic year starting year; 2026 means academic year 2026–2027. Must come from the user's actual calendar, not an inferred year.",
+          "maximum": 2100,
+          "minimum": 2000,
+          "type": "integer"
+        },
+        "active": {
+          "description": "Whether this occurrence is currently active; get may return inactive history.",
+          "type": "boolean"
+        },
+        "created_at": {
+          "description": "Persistence creation time.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "details": {
+          "default": "",
+          "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+          "maxLength": 16384,
+          "type": "string"
+        },
+        "end_time": {
+          "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "event_status": {
+          "description": "Application completion flag. INCOMPLETE does not prove absence, lateness or cancellation.",
+          "enum": [
+            "INCOMPLETE",
+            "COMPLETED"
+          ],
+          "type": "string"
+        },
+        "id": {
+          "description": "Persisted schedule occurrence ID; use query/get results, never a course or series ID.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "mod": {
+          "additionalProperties": false,
+          "description": "Source timetable fields, local overrides and recorded change history. These explain this occurrence; they are not an automatic recurrence command.",
+          "properties": {
+            "base": {
+              "additionalProperties": false,
+              "description": "Original source timetable fields before local overrides, when available.",
+              "properties": {
+                "details": {
+                  "default": "",
+                  "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                "end_time": {
+                  "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                  "format": "date-time",
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                "start_time": {
+                  "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                  "format": "date-time",
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                "teaching_week": {
+                  "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                  "maximum": 60,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "title": {
+                  "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                  "maxLength": 1000,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "teaching_week",
+                "start_time",
+                "end_time",
+                "title",
+                "details"
+              ],
+              "type": "object"
+            },
+            "deleted": {
+              "description": "Whether the timetable occurrence has a deletion marker; absence is false.",
+              "type": "boolean"
+            },
+            "history": {
+              "description": "Recorded modifications in storage order. Empty array means no recorded changes.",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "after": {
+                    "additionalProperties": false,
+                    "description": "Complete ScheduleFields immediately after this recorded change.",
+                    "properties": {
+                      "details": {
+                        "default": "",
+                        "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                        "maxLength": 16384,
+                        "type": "string"
+                      },
+                      "end_time": {
+                        "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "start_time": {
+                        "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "teaching_week": {
+                        "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                        "maximum": 60,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "title": {
+                        "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                        "maxLength": 1000,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "teaching_week",
+                      "start_time",
+                      "end_time",
+                      "title",
+                      "details"
+                    ],
+                    "type": "object"
+                  },
+                  "at": {
+                    "description": "Time this change was recorded, not the schedule's start time.",
+                    "format": "date-time",
+                    "maxLength": 64,
+                    "type": "string"
+                  },
+                  "before": {
+                    "additionalProperties": false,
+                    "description": "Complete ScheduleFields immediately before this recorded change.",
+                    "properties": {
+                      "details": {
+                        "default": "",
+                        "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                        "maxLength": 16384,
+                        "type": "string"
+                      },
+                      "end_time": {
+                        "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "start_time": {
+                        "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "teaching_week": {
+                        "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                        "maximum": 60,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "title": {
+                        "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                        "maxLength": 1000,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "teaching_week",
+                      "start_time",
+                      "end_time",
+                      "title",
+                      "details"
+                    ],
+                    "type": "object"
+                  },
+                  "effective_week": {
+                    "description": "Teaching week from which a permanent timetable change applies, or the selected temporary week.",
+                    "maximum": 60,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "description": "Kind of this recorded change; SYNC/SYNC_REMOVED are source refresh history and DELETE is a retained timetable deletion marker.",
+                    "enum": [
+                      "TEMPORARY",
+                      "PERMANENT",
+                      "SYNC",
+                      "DELETE",
+                      "SYNC_REMOVED"
+                    ],
+                    "type": "string"
+                  },
+                  "original_id": {
+                    "description": "ID of the occurrence on which the change was requested.",
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "before",
+                  "after",
+                  "effective_week",
+                  "original_id",
+                  "at"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "permanent": {
+              "additionalProperties": false,
+              "description": "Permanent local override for this series from its effective teaching week.",
+              "properties": {
+                "after": {
+                  "additionalProperties": false,
+                  "description": "Complete after snapshot; apply only members named in fields.",
+                  "properties": {
+                    "details": {
+                      "default": "",
+                      "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                      "maxLength": 16384,
+                      "type": "string"
+                    },
+                    "end_time": {
+                      "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                      "format": "date-time",
+                      "maxLength": 64,
+                      "type": "string"
+                    },
+                    "start_time": {
+                      "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                      "format": "date-time",
+                      "maxLength": 64,
+                      "type": "string"
+                    },
+                    "teaching_week": {
+                      "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                      "maximum": 60,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "title": {
+                      "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                      "maxLength": 1000,
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "teaching_week",
+                    "start_time",
+                    "end_time",
+                    "title",
+                    "details"
+                  ],
+                  "type": "object"
+                },
+                "fields": {
+                  "description": "Explicit fields changed by this patch; after contains a full snapshot, but only these fields are applied.",
+                  "items": {
+                    "description": "Changed ScheduleFields member.",
+                    "enum": [
+                      "start_time",
+                      "end_time",
+                      "title",
+                      "details"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "fields",
+                "after"
+              ],
+              "type": "object"
+            },
+            "teaching_weeks": {
+              "description": "Explicit teaching weeks from the source timetable, not inferred calendar recurrence.",
+              "items": {
+                "description": "Teaching week in the source timetable series.",
+                "maximum": 60,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "temporary": {
+              "additionalProperties": false,
+              "description": "Local override applying only to this selected occurrence/week.",
+              "properties": {
+                "after": {
+                  "additionalProperties": false,
+                  "description": "Complete after snapshot; apply only members named in fields.",
+                  "properties": {
+                    "details": {
+                      "default": "",
+                      "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                      "maxLength": 16384,
+                      "type": "string"
+                    },
+                    "end_time": {
+                      "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                      "format": "date-time",
+                      "maxLength": 64,
+                      "type": "string"
+                    },
+                    "start_time": {
+                      "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                      "format": "date-time",
+                      "maxLength": 64,
+                      "type": "string"
+                    },
+                    "teaching_week": {
+                      "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                      "maximum": 60,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "title": {
+                      "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                      "maxLength": 1000,
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "teaching_week",
+                    "start_time",
+                    "end_time",
+                    "title",
+                    "details"
+                  ],
+                  "type": "object"
+                },
+                "fields": {
+                  "description": "Explicit fields changed by this patch; after contains a full snapshot, but only these fields are applied.",
+                  "items": {
+                    "description": "Changed ScheduleFields member.",
+                    "enum": [
+                      "start_time",
+                      "end_time",
+                      "title",
+                      "details"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "fields",
+                "after"
+              ],
+              "type": "object"
+            },
+            "week_pattern": {
+              "description": "Source week-pattern text, when present; not an inferred recurrence rule.",
+              "type": "string"
+            },
+            "weeks_raw": {
+              "description": "Original timetable week expression, when available.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "history"
+          ],
+          "type": "object"
+        },
+        "origin_key": {
+          "description": "Optional source-specific timetable origin key.",
+          "type": "string"
+        },
+        "series_key": {
+          "description": "Optional timetable series key. Not an occurrence ID.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Origin of this persisted occurrence.",
+          "enum": [
+            "USER",
+            "AGENT",
+            "TIMETABLE"
+          ],
+          "type": "string"
+        },
+        "start_time": {
+          "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "teaching_week": {
+          "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+          "maximum": 60,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "term": {
+          "description": "Academic term: 1 or 2, used with academic_year.",
+          "maximum": 2,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "time_status": {
+          "description": "Derived time window status; independent of personal completion/attendance.",
+          "enum": [
+            "NOT_STARTED",
+            "IN_PROGRESS",
+            "FINISHED"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+          "maxLength": 1000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "updated_at": {
+          "description": "Last persistence update time.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "user_id": {
+          "description": "Owning user selected by the trusted runtime, not a model-controlled argument.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "user_id",
+        "academic_year",
+        "term",
+        "teaching_week",
+        "start_time",
+        "end_time",
+        "title",
+        "details",
+        "source",
+        "time_status",
+        "event_status",
+        "active",
+        "mod",
+        "created_at",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "permissions": [
+      "schedule.write"
+    ],
+    "timeout": 20000000000
+  },
+  {
+    "name": "schedule_delete",
+    "description": "按id删除日程，需要明确授权。课表记录保留删除标记与历史，手动/Agent日程永久删除。无期望版本参数；先读取核实，不可凭重复通知自动删除。重复删除会返回找不到，不保证幂等成功。",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Current user's persisted occurrence ID; read and verify scope and source before deletion.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "deleted": {
+          "description": "True only when this delete operation completed; not an undo receipt.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "deleted"
+      ],
+      "type": "object"
+    },
+    "permissions": [
+      "schedule.delete"
+    ],
+    "timeout": 20000000000
+  },
+  {
+    "name": "schedule_get",
+    "description": "按id读取当前用户的日程详情，包含有效状态、原始课表安排、临时/永久修改和历史。可能返回inactive历史记录；不要据此认定当前仍有效。",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Persisted occurrence ID returned by schedule_query/create/update; not a course, source or series ID.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "academic_year": {
+          "description": "Academic year starting year; 2026 means academic year 2026–2027. Must come from the user's actual calendar, not an inferred year.",
+          "maximum": 2100,
+          "minimum": 2000,
+          "type": "integer"
+        },
+        "active": {
+          "description": "Whether this occurrence is currently active; get may return inactive history.",
+          "type": "boolean"
+        },
+        "created_at": {
+          "description": "Persistence creation time.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "details": {
+          "default": "",
+          "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+          "maxLength": 16384,
+          "type": "string"
+        },
+        "end_time": {
+          "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "event_status": {
+          "description": "Application completion flag. INCOMPLETE does not prove absence, lateness or cancellation.",
+          "enum": [
+            "INCOMPLETE",
+            "COMPLETED"
+          ],
+          "type": "string"
+        },
+        "id": {
+          "description": "Persisted schedule occurrence ID; use query/get results, never a course or series ID.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "mod": {
+          "additionalProperties": false,
+          "description": "Source timetable fields, local overrides and recorded change history. These explain this occurrence; they are not an automatic recurrence command.",
+          "properties": {
+            "base": {
+              "additionalProperties": false,
+              "description": "Original source timetable fields before local overrides, when available.",
+              "properties": {
+                "details": {
+                  "default": "",
+                  "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                "end_time": {
+                  "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                  "format": "date-time",
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                "start_time": {
+                  "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                  "format": "date-time",
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                "teaching_week": {
+                  "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                  "maximum": 60,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "title": {
+                  "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                  "maxLength": 1000,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "teaching_week",
+                "start_time",
+                "end_time",
+                "title",
+                "details"
+              ],
+              "type": "object"
+            },
+            "deleted": {
+              "description": "Whether the timetable occurrence has a deletion marker; absence is false.",
+              "type": "boolean"
+            },
+            "history": {
+              "description": "Recorded modifications in storage order. Empty array means no recorded changes.",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "after": {
+                    "additionalProperties": false,
+                    "description": "Complete ScheduleFields immediately after this recorded change.",
+                    "properties": {
+                      "details": {
+                        "default": "",
+                        "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                        "maxLength": 16384,
+                        "type": "string"
+                      },
+                      "end_time": {
+                        "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "start_time": {
+                        "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "teaching_week": {
+                        "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                        "maximum": 60,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "title": {
+                        "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                        "maxLength": 1000,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "teaching_week",
+                      "start_time",
+                      "end_time",
+                      "title",
+                      "details"
+                    ],
+                    "type": "object"
+                  },
+                  "at": {
+                    "description": "Time this change was recorded, not the schedule's start time.",
+                    "format": "date-time",
+                    "maxLength": 64,
+                    "type": "string"
+                  },
+                  "before": {
+                    "additionalProperties": false,
+                    "description": "Complete ScheduleFields immediately before this recorded change.",
+                    "properties": {
+                      "details": {
+                        "default": "",
+                        "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                        "maxLength": 16384,
+                        "type": "string"
+                      },
+                      "end_time": {
+                        "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "start_time": {
+                        "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "teaching_week": {
+                        "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                        "maximum": 60,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "title": {
+                        "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                        "maxLength": 1000,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "teaching_week",
+                      "start_time",
+                      "end_time",
+                      "title",
+                      "details"
+                    ],
+                    "type": "object"
+                  },
+                  "effective_week": {
+                    "description": "Teaching week from which a permanent timetable change applies, or the selected temporary week.",
+                    "maximum": 60,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "description": "Kind of this recorded change; SYNC/SYNC_REMOVED are source refresh history and DELETE is a retained timetable deletion marker.",
+                    "enum": [
+                      "TEMPORARY",
+                      "PERMANENT",
+                      "SYNC",
+                      "DELETE",
+                      "SYNC_REMOVED"
+                    ],
+                    "type": "string"
+                  },
+                  "original_id": {
+                    "description": "ID of the occurrence on which the change was requested.",
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "before",
+                  "after",
+                  "effective_week",
+                  "original_id",
+                  "at"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "permanent": {
+              "additionalProperties": false,
+              "description": "Permanent local override for this series from its effective teaching week.",
+              "properties": {
+                "after": {
+                  "additionalProperties": false,
+                  "description": "Complete after snapshot; apply only members named in fields.",
+                  "properties": {
+                    "details": {
+                      "default": "",
+                      "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                      "maxLength": 16384,
+                      "type": "string"
+                    },
+                    "end_time": {
+                      "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                      "format": "date-time",
+                      "maxLength": 64,
+                      "type": "string"
+                    },
+                    "start_time": {
+                      "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                      "format": "date-time",
+                      "maxLength": 64,
+                      "type": "string"
+                    },
+                    "teaching_week": {
+                      "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                      "maximum": 60,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "title": {
+                      "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                      "maxLength": 1000,
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "teaching_week",
+                    "start_time",
+                    "end_time",
+                    "title",
+                    "details"
+                  ],
+                  "type": "object"
+                },
+                "fields": {
+                  "description": "Explicit fields changed by this patch; after contains a full snapshot, but only these fields are applied.",
+                  "items": {
+                    "description": "Changed ScheduleFields member.",
+                    "enum": [
+                      "start_time",
+                      "end_time",
+                      "title",
+                      "details"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "fields",
+                "after"
+              ],
+              "type": "object"
+            },
+            "teaching_weeks": {
+              "description": "Explicit teaching weeks from the source timetable, not inferred calendar recurrence.",
+              "items": {
+                "description": "Teaching week in the source timetable series.",
+                "maximum": 60,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "temporary": {
+              "additionalProperties": false,
+              "description": "Local override applying only to this selected occurrence/week.",
+              "properties": {
+                "after": {
+                  "additionalProperties": false,
+                  "description": "Complete after snapshot; apply only members named in fields.",
+                  "properties": {
+                    "details": {
+                      "default": "",
+                      "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                      "maxLength": 16384,
+                      "type": "string"
+                    },
+                    "end_time": {
+                      "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                      "format": "date-time",
+                      "maxLength": 64,
+                      "type": "string"
+                    },
+                    "start_time": {
+                      "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                      "format": "date-time",
+                      "maxLength": 64,
+                      "type": "string"
+                    },
+                    "teaching_week": {
+                      "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                      "maximum": 60,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "title": {
+                      "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                      "maxLength": 1000,
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "teaching_week",
+                    "start_time",
+                    "end_time",
+                    "title",
+                    "details"
+                  ],
+                  "type": "object"
+                },
+                "fields": {
+                  "description": "Explicit fields changed by this patch; after contains a full snapshot, but only these fields are applied.",
+                  "items": {
+                    "description": "Changed ScheduleFields member.",
+                    "enum": [
+                      "start_time",
+                      "end_time",
+                      "title",
+                      "details"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "fields",
+                "after"
+              ],
+              "type": "object"
+            },
+            "week_pattern": {
+              "description": "Source week-pattern text, when present; not an inferred recurrence rule.",
+              "type": "string"
+            },
+            "weeks_raw": {
+              "description": "Original timetable week expression, when available.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "history"
+          ],
+          "type": "object"
+        },
+        "origin_key": {
+          "description": "Optional source-specific timetable origin key.",
+          "type": "string"
+        },
+        "series_key": {
+          "description": "Optional timetable series key. Not an occurrence ID.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Origin of this persisted occurrence.",
+          "enum": [
+            "USER",
+            "AGENT",
+            "TIMETABLE"
+          ],
+          "type": "string"
+        },
+        "start_time": {
+          "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "teaching_week": {
+          "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+          "maximum": 60,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "term": {
+          "description": "Academic term: 1 or 2, used with academic_year.",
+          "maximum": 2,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "time_status": {
+          "description": "Derived time window status; independent of personal completion/attendance.",
+          "enum": [
+            "NOT_STARTED",
+            "IN_PROGRESS",
+            "FINISHED"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+          "maxLength": 1000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "updated_at": {
+          "description": "Last persistence update time.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "user_id": {
+          "description": "Owning user selected by the trusted runtime, not a model-controlled argument.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "user_id",
+        "academic_year",
+        "term",
+        "teaching_week",
+        "start_time",
+        "end_time",
+        "title",
+        "details",
+        "source",
+        "time_status",
+        "event_status",
+        "active",
+        "mod",
+        "created_at",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "permissions": [
+      "schedule.read"
+    ],
+    "timeout": 20000000000,
+    "read_only": true
+  },
+  {
+    "name": "schedule_query",
+    "description": "查询当前用户的有效日程。按学年/学期/教学周，或带时区的from/to时间范围查询；范围最长366天，区间[from,to)重叠匹配。两类条件同时提供时按AND组合。按start_time,id排序，默认100条，limit最大1000，offset最大100000；空页结束，page_limit_reason=offset_limit时停止，不再使用next_offset。教学周不是自然周。",
+    "parameters": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "academic_year",
+            "term",
+            "teaching_week"
+          ]
+        },
+        {
+          "required": [
+            "from",
+            "to"
+          ]
+        }
+      ],
+      "properties": {
+        "academic_year": {
+          "description": "Academic year starting year; 2026 means academic year 2026–2027. Must come from the user's actual calendar, not an inferred year.",
+          "maximum": 2100,
+          "minimum": 2000,
+          "type": "integer"
+        },
+        "from": {
+          "description": "Inclusive lower boundary of [from,to); matches occurrences overlapping this range. Supply together with to; maximum 366 days.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "limit": {
+          "default": 100,
+          "description": "Maximum returned rows, default 100; a nonempty page is not proof of complete coverage.",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "default": 0,
+          "description": "First query omits this or uses 0. Continue with returned next_offset using unchanged filters. Stop on an empty page or page_limit_reason=offset_limit; do not reuse an out-of-range next_offset.",
+          "maximum": 100000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "teaching_week": {
+          "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+          "maximum": 60,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "term": {
+          "description": "Academic term: 1 or 2, used with academic_year.",
+          "maximum": 2,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "to": {
+          "description": "Exclusive upper boundary of [from,to), after from. Supply together with from.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "description": "Active occurrences in start_time/id order; an empty page ends iteration.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "academic_year": {
+                "description": "Academic year starting year; 2026 means academic year 2026–2027. Must come from the user's actual calendar, not an inferred year.",
+                "maximum": 2100,
+                "minimum": 2000,
+                "type": "integer"
+              },
+              "active": {
+                "description": "Whether this occurrence is currently active; get may return inactive history.",
+                "type": "boolean"
+              },
+              "created_at": {
+                "description": "Persistence creation time.",
+                "format": "date-time",
+                "maxLength": 64,
+                "type": "string"
+              },
+              "details": {
+                "default": "",
+                "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                "maxLength": 16384,
+                "type": "string"
+              },
+              "end_time": {
+                "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                "format": "date-time",
+                "maxLength": 64,
+                "type": "string"
+              },
+              "event_status": {
+                "description": "Application completion flag. INCOMPLETE does not prove absence, lateness or cancellation.",
+                "enum": [
+                  "INCOMPLETE",
+                  "COMPLETED"
+                ],
+                "type": "string"
+              },
+              "id": {
+                "description": "Persisted schedule occurrence ID; use query/get results, never a course or series ID.",
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "mod": {
+                "additionalProperties": false,
+                "description": "Source timetable fields, local overrides and recorded change history. These explain this occurrence; they are not an automatic recurrence command.",
+                "properties": {
+                  "base": {
+                    "additionalProperties": false,
+                    "description": "Original source timetable fields before local overrides, when available.",
+                    "properties": {
+                      "details": {
+                        "default": "",
+                        "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                        "maxLength": 16384,
+                        "type": "string"
+                      },
+                      "end_time": {
+                        "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "start_time": {
+                        "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "teaching_week": {
+                        "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                        "maximum": 60,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "title": {
+                        "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                        "maxLength": 1000,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "teaching_week",
+                      "start_time",
+                      "end_time",
+                      "title",
+                      "details"
+                    ],
+                    "type": "object"
+                  },
+                  "deleted": {
+                    "description": "Whether the timetable occurrence has a deletion marker; absence is false.",
+                    "type": "boolean"
+                  },
+                  "history": {
+                    "description": "Recorded modifications in storage order. Empty array means no recorded changes.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "after": {
+                          "additionalProperties": false,
+                          "description": "Complete ScheduleFields immediately after this recorded change.",
+                          "properties": {
+                            "details": {
+                              "default": "",
+                              "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                              "maxLength": 16384,
+                              "type": "string"
+                            },
+                            "end_time": {
+                              "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                              "format": "date-time",
+                              "maxLength": 64,
+                              "type": "string"
+                            },
+                            "start_time": {
+                              "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                              "format": "date-time",
+                              "maxLength": 64,
+                              "type": "string"
+                            },
+                            "teaching_week": {
+                              "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                              "maximum": 60,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "title": {
+                              "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                              "maxLength": 1000,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "teaching_week",
+                            "start_time",
+                            "end_time",
+                            "title",
+                            "details"
+                          ],
+                          "type": "object"
+                        },
+                        "at": {
+                          "description": "Time this change was recorded, not the schedule's start time.",
+                          "format": "date-time",
+                          "maxLength": 64,
+                          "type": "string"
+                        },
+                        "before": {
+                          "additionalProperties": false,
+                          "description": "Complete ScheduleFields immediately before this recorded change.",
+                          "properties": {
+                            "details": {
+                              "default": "",
+                              "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                              "maxLength": 16384,
+                              "type": "string"
+                            },
+                            "end_time": {
+                              "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                              "format": "date-time",
+                              "maxLength": 64,
+                              "type": "string"
+                            },
+                            "start_time": {
+                              "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                              "format": "date-time",
+                              "maxLength": 64,
+                              "type": "string"
+                            },
+                            "teaching_week": {
+                              "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                              "maximum": 60,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "title": {
+                              "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                              "maxLength": 1000,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "teaching_week",
+                            "start_time",
+                            "end_time",
+                            "title",
+                            "details"
+                          ],
+                          "type": "object"
+                        },
+                        "effective_week": {
+                          "description": "Teaching week from which a permanent timetable change applies, or the selected temporary week.",
+                          "maximum": 60,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "mode": {
+                          "description": "Kind of this recorded change; SYNC/SYNC_REMOVED are source refresh history and DELETE is a retained timetable deletion marker.",
+                          "enum": [
+                            "TEMPORARY",
+                            "PERMANENT",
+                            "SYNC",
+                            "DELETE",
+                            "SYNC_REMOVED"
+                          ],
+                          "type": "string"
+                        },
+                        "original_id": {
+                          "description": "ID of the occurrence on which the change was requested.",
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "mode",
+                        "before",
+                        "after",
+                        "effective_week",
+                        "original_id",
+                        "at"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "permanent": {
+                    "additionalProperties": false,
+                    "description": "Permanent local override for this series from its effective teaching week.",
+                    "properties": {
+                      "after": {
+                        "additionalProperties": false,
+                        "description": "Complete after snapshot; apply only members named in fields.",
+                        "properties": {
+                          "details": {
+                            "default": "",
+                            "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                            "maxLength": 16384,
+                            "type": "string"
+                          },
+                          "end_time": {
+                            "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                            "format": "date-time",
+                            "maxLength": 64,
+                            "type": "string"
+                          },
+                          "start_time": {
+                            "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                            "format": "date-time",
+                            "maxLength": 64,
+                            "type": "string"
+                          },
+                          "teaching_week": {
+                            "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                            "maximum": 60,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "title": {
+                            "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                            "maxLength": 1000,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "teaching_week",
+                          "start_time",
+                          "end_time",
+                          "title",
+                          "details"
+                        ],
+                        "type": "object"
+                      },
+                      "fields": {
+                        "description": "Explicit fields changed by this patch; after contains a full snapshot, but only these fields are applied.",
+                        "items": {
+                          "description": "Changed ScheduleFields member.",
+                          "enum": [
+                            "start_time",
+                            "end_time",
+                            "title",
+                            "details"
+                          ],
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "fields",
+                      "after"
+                    ],
+                    "type": "object"
+                  },
+                  "teaching_weeks": {
+                    "description": "Explicit teaching weeks from the source timetable, not inferred calendar recurrence.",
+                    "items": {
+                      "description": "Teaching week in the source timetable series.",
+                      "maximum": 60,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "temporary": {
+                    "additionalProperties": false,
+                    "description": "Local override applying only to this selected occurrence/week.",
+                    "properties": {
+                      "after": {
+                        "additionalProperties": false,
+                        "description": "Complete after snapshot; apply only members named in fields.",
+                        "properties": {
+                          "details": {
+                            "default": "",
+                            "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                            "maxLength": 16384,
+                            "type": "string"
+                          },
+                          "end_time": {
+                            "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                            "format": "date-time",
+                            "maxLength": 64,
+                            "type": "string"
+                          },
+                          "start_time": {
+                            "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                            "format": "date-time",
+                            "maxLength": 64,
+                            "type": "string"
+                          },
+                          "teaching_week": {
+                            "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                            "maximum": 60,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "title": {
+                            "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                            "maxLength": 1000,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "teaching_week",
+                          "start_time",
+                          "end_time",
+                          "title",
+                          "details"
+                        ],
+                        "type": "object"
+                      },
+                      "fields": {
+                        "description": "Explicit fields changed by this patch; after contains a full snapshot, but only these fields are applied.",
+                        "items": {
+                          "description": "Changed ScheduleFields member.",
+                          "enum": [
+                            "start_time",
+                            "end_time",
+                            "title",
+                            "details"
+                          ],
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "fields",
+                      "after"
+                    ],
+                    "type": "object"
+                  },
+                  "week_pattern": {
+                    "description": "Source week-pattern text, when present; not an inferred recurrence rule.",
+                    "type": "string"
+                  },
+                  "weeks_raw": {
+                    "description": "Original timetable week expression, when available.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "history"
+                ],
+                "type": "object"
+              },
+              "origin_key": {
+                "description": "Optional source-specific timetable origin key.",
+                "type": "string"
+              },
+              "series_key": {
+                "description": "Optional timetable series key. Not an occurrence ID.",
+                "type": "string"
+              },
+              "source": {
+                "description": "Origin of this persisted occurrence.",
+                "enum": [
+                  "USER",
+                  "AGENT",
+                  "TIMETABLE"
+                ],
+                "type": "string"
+              },
+              "start_time": {
+                "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                "format": "date-time",
+                "maxLength": 64,
+                "type": "string"
+              },
+              "teaching_week": {
+                "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                "maximum": 60,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "term": {
+                "description": "Academic term: 1 or 2, used with academic_year.",
+                "maximum": 2,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "time_status": {
+                "description": "Derived time window status; independent of personal completion/attendance.",
+                "enum": [
+                  "NOT_STARTED",
+                  "IN_PROGRESS",
+                  "FINISHED"
+                ],
+                "type": "string"
+              },
+              "title": {
+                "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                "maxLength": 1000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "updated_at": {
+                "description": "Last persistence update time.",
+                "format": "date-time",
+                "maxLength": 64,
+                "type": "string"
+              },
+              "user_id": {
+                "description": "Owning user selected by the trusted runtime, not a model-controlled argument.",
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "user_id",
+              "academic_year",
+              "term",
+              "teaching_week",
+              "start_time",
+              "end_time",
+              "title",
+              "details",
+              "source",
+              "time_status",
+              "event_status",
+              "active",
+              "mod",
+              "created_at",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "next_offset": {
+          "description": "Offset after this page. Continue only when items is nonempty and page_limit_reason is absent; an offset_limit marker means this value cannot be used.",
+          "maximum": 101000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Offset used for this page.",
+          "maximum": 100000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "page_limit_reason": {
+          "description": "Present as offset_limit when the next offset exceeds the accepted query boundary. Stop instead of retrying the same or an out-of-range offset.",
+          "enum": [
+            "offset_limit"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "items",
+        "offset",
+        "next_offset"
+      ],
+      "type": "object"
+    },
+    "permissions": [
+      "schedule.read"
+    ],
+    "timeout": 20000000000,
+    "read_only": true
+  },
+  {
+    "name": "schedule_update",
+    "description": "修改日程或完成状态。先get核实；mode必填TEMPORARY/PERMANENT，至少提供一个修改字段。省略字段保留；details空串清除，null不接受。课表TEMPORARY只改选定周，PERMANENT影响同系列当前及后续周；event_status仅作用于选定日程。返回选定条目，不代表只影响这一条；没有预期版本参数或撤销保证，不可盲重试。",
+    "parameters": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "start_time"
+          ]
+        },
+        {
+          "required": [
+            "end_time"
+          ]
+        },
+        {
+          "required": [
+            "title"
+          ]
+        },
+        {
+          "required": [
+            "details"
+          ]
+        },
+        {
+          "required": [
+            "event_status"
+          ]
+        }
+      ],
+      "properties": {
+        "details": {
+          "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+          "maxLength": 16384,
+          "type": "string"
+        },
+        "end_time": {
+          "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "event_status": {
+          "description": "Completion flag for the selected occurrence only; omission preserves the existing flag.",
+          "enum": [
+            "INCOMPLETE",
+            "COMPLETED"
+          ],
+          "type": "string"
+        },
+        "id": {
+          "description": "Current user's persisted schedule occurrence ID returned by schedule_query/get. Read it before updating.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "mode": {
+          "description": "Required scope. TEMPORARY changes only the selected timetable week. PERMANENT changes the same timetable series from the selected week onward. Non-timetable schedules change only this occurrence. event_status applies only to the selected occurrence.",
+          "enum": [
+            "TEMPORARY",
+            "PERMANENT"
+          ],
+          "type": "string"
+        },
+        "start_time": {
+          "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "title": {
+          "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+          "maxLength": 1000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "academic_year": {
+          "description": "Academic year starting year; 2026 means academic year 2026–2027. Must come from the user's actual calendar, not an inferred year.",
+          "maximum": 2100,
+          "minimum": 2000,
+          "type": "integer"
+        },
+        "active": {
+          "description": "Whether this occurrence is currently active; get may return inactive history.",
+          "type": "boolean"
+        },
+        "created_at": {
+          "description": "Persistence creation time.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "details": {
+          "default": "",
+          "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+          "maxLength": 16384,
+          "type": "string"
+        },
+        "end_time": {
+          "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "event_status": {
+          "description": "Application completion flag. INCOMPLETE does not prove absence, lateness or cancellation.",
+          "enum": [
+            "INCOMPLETE",
+            "COMPLETED"
+          ],
+          "type": "string"
+        },
+        "id": {
+          "description": "Persisted schedule occurrence ID; use query/get results, never a course or series ID.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "mod": {
+          "additionalProperties": false,
+          "description": "Source timetable fields, local overrides and recorded change history. These explain this occurrence; they are not an automatic recurrence command.",
+          "properties": {
+            "base": {
+              "additionalProperties": false,
+              "description": "Original source timetable fields before local overrides, when available.",
+              "properties": {
+                "details": {
+                  "default": "",
+                  "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                "end_time": {
+                  "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                  "format": "date-time",
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                "start_time": {
+                  "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                  "format": "date-time",
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                "teaching_week": {
+                  "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                  "maximum": 60,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "title": {
+                  "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                  "maxLength": 1000,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "teaching_week",
+                "start_time",
+                "end_time",
+                "title",
+                "details"
+              ],
+              "type": "object"
+            },
+            "deleted": {
+              "description": "Whether the timetable occurrence has a deletion marker; absence is false.",
+              "type": "boolean"
+            },
+            "history": {
+              "description": "Recorded modifications in storage order. Empty array means no recorded changes.",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "after": {
+                    "additionalProperties": false,
+                    "description": "Complete ScheduleFields immediately after this recorded change.",
+                    "properties": {
+                      "details": {
+                        "default": "",
+                        "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                        "maxLength": 16384,
+                        "type": "string"
+                      },
+                      "end_time": {
+                        "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "start_time": {
+                        "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "teaching_week": {
+                        "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                        "maximum": 60,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "title": {
+                        "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                        "maxLength": 1000,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "teaching_week",
+                      "start_time",
+                      "end_time",
+                      "title",
+                      "details"
+                    ],
+                    "type": "object"
+                  },
+                  "at": {
+                    "description": "Time this change was recorded, not the schedule's start time.",
+                    "format": "date-time",
+                    "maxLength": 64,
+                    "type": "string"
+                  },
+                  "before": {
+                    "additionalProperties": false,
+                    "description": "Complete ScheduleFields immediately before this recorded change.",
+                    "properties": {
+                      "details": {
+                        "default": "",
+                        "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                        "maxLength": 16384,
+                        "type": "string"
+                      },
+                      "end_time": {
+                        "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "start_time": {
+                        "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "teaching_week": {
+                        "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                        "maximum": 60,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "title": {
+                        "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                        "maxLength": 1000,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "teaching_week",
+                      "start_time",
+                      "end_time",
+                      "title",
+                      "details"
+                    ],
+                    "type": "object"
+                  },
+                  "effective_week": {
+                    "description": "Teaching week from which a permanent timetable change applies, or the selected temporary week.",
+                    "maximum": 60,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "description": "Kind of this recorded change; SYNC/SYNC_REMOVED are source refresh history and DELETE is a retained timetable deletion marker.",
+                    "enum": [
+                      "TEMPORARY",
+                      "PERMANENT",
+                      "SYNC",
+                      "DELETE",
+                      "SYNC_REMOVED"
+                    ],
+                    "type": "string"
+                  },
+                  "original_id": {
+                    "description": "ID of the occurrence on which the change was requested.",
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "before",
+                  "after",
+                  "effective_week",
+                  "original_id",
+                  "at"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "permanent": {
+              "additionalProperties": false,
+              "description": "Permanent local override for this series from its effective teaching week.",
+              "properties": {
+                "after": {
+                  "additionalProperties": false,
+                  "description": "Complete after snapshot; apply only members named in fields.",
+                  "properties": {
+                    "details": {
+                      "default": "",
+                      "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                      "maxLength": 16384,
+                      "type": "string"
+                    },
+                    "end_time": {
+                      "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                      "format": "date-time",
+                      "maxLength": 64,
+                      "type": "string"
+                    },
+                    "start_time": {
+                      "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                      "format": "date-time",
+                      "maxLength": 64,
+                      "type": "string"
+                    },
+                    "teaching_week": {
+                      "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                      "maximum": 60,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "title": {
+                      "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                      "maxLength": 1000,
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "teaching_week",
+                    "start_time",
+                    "end_time",
+                    "title",
+                    "details"
+                  ],
+                  "type": "object"
+                },
+                "fields": {
+                  "description": "Explicit fields changed by this patch; after contains a full snapshot, but only these fields are applied.",
+                  "items": {
+                    "description": "Changed ScheduleFields member.",
+                    "enum": [
+                      "start_time",
+                      "end_time",
+                      "title",
+                      "details"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "fields",
+                "after"
+              ],
+              "type": "object"
+            },
+            "teaching_weeks": {
+              "description": "Explicit teaching weeks from the source timetable, not inferred calendar recurrence.",
+              "items": {
+                "description": "Teaching week in the source timetable series.",
+                "maximum": 60,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "temporary": {
+              "additionalProperties": false,
+              "description": "Local override applying only to this selected occurrence/week.",
+              "properties": {
+                "after": {
+                  "additionalProperties": false,
+                  "description": "Complete after snapshot; apply only members named in fields.",
+                  "properties": {
+                    "details": {
+                      "default": "",
+                      "description": "Schedule details, at most 16384 UTF-8 bytes; maxLength is only a character precheck. Create omission becomes empty text. Update omission preserves details; an explicit empty string clears them. null is not accepted.",
+                      "maxLength": 16384,
+                      "type": "string"
+                    },
+                    "end_time": {
+                      "description": "Exclusive end instant in RFC3339 with explicit timezone. Whole-minute precision; duration must be positive and no more than seven days.",
+                      "format": "date-time",
+                      "maxLength": 64,
+                      "type": "string"
+                    },
+                    "start_time": {
+                      "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+                      "format": "date-time",
+                      "maxLength": 64,
+                      "type": "string"
+                    },
+                    "teaching_week": {
+                      "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+                      "maximum": 60,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "title": {
+                      "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+                      "maxLength": 1000,
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "teaching_week",
+                    "start_time",
+                    "end_time",
+                    "title",
+                    "details"
+                  ],
+                  "type": "object"
+                },
+                "fields": {
+                  "description": "Explicit fields changed by this patch; after contains a full snapshot, but only these fields are applied.",
+                  "items": {
+                    "description": "Changed ScheduleFields member.",
+                    "enum": [
+                      "start_time",
+                      "end_time",
+                      "title",
+                      "details"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "fields",
+                "after"
+              ],
+              "type": "object"
+            },
+            "week_pattern": {
+              "description": "Source week-pattern text, when present; not an inferred recurrence rule.",
+              "type": "string"
+            },
+            "weeks_raw": {
+              "description": "Original timetable week expression, when available.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "history"
+          ],
+          "type": "object"
+        },
+        "origin_key": {
+          "description": "Optional source-specific timetable origin key.",
+          "type": "string"
+        },
+        "series_key": {
+          "description": "Optional timetable series key. Not an occurrence ID.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Origin of this persisted occurrence.",
+          "enum": [
+            "USER",
+            "AGENT",
+            "TIMETABLE"
+          ],
+          "type": "string"
+        },
+        "start_time": {
+          "description": "Inclusive start instant in RFC3339 with explicit timezone. Whole-minute precision; must precede end_time.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "teaching_week": {
+          "description": "Teaching-week number in the selected academic term, not ISO or calendar week.",
+          "maximum": 60,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "term": {
+          "description": "Academic term: 1 or 2, used with academic_year.",
+          "maximum": 2,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "time_status": {
+          "description": "Derived time window status; independent of personal completion/attendance.",
+          "enum": [
+            "NOT_STARTED",
+            "IN_PROGRESS",
+            "FINISHED"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "description": "Schedule title. Required non-blank text, at most 1000 UTF-8 bytes; maxLength is only a character precheck. For updates, omission preserves the title.",
+          "maxLength": 1000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "updated_at": {
+          "description": "Last persistence update time.",
+          "format": "date-time",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "user_id": {
+          "description": "Owning user selected by the trusted runtime, not a model-controlled argument.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "user_id",
+        "academic_year",
+        "term",
+        "teaching_week",
+        "start_time",
+        "end_time",
+        "title",
+        "details",
+        "source",
+        "time_status",
+        "event_status",
+        "active",
+        "mod",
+        "created_at",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "permissions": [
+      "schedule.write"
+    ],
+    "timeout": 20000000000
+  }
+]

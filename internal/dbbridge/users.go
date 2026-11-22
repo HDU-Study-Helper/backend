@@ -61,7 +61,7 @@ func (r *users) Create(ctx context.Context, u model.User) (model.User, error) {
 			return err
 		}
 		var err error
-		result, err = insertUser(ctx, tx, u)
+		result, err = r.insertWithRoles(ctx, tx, u)
 		return err
 	})
 	if err != nil {
@@ -232,7 +232,7 @@ func (r *users) BootstrapAdmin(ctx context.Context, u model.User) (model.User, b
 			}
 			return err
 		}
-		result, err = insertUser(ctx, tx, u)
+		result, err = r.insertWithRoles(ctx, tx, u)
 		created = err == nil
 		return err
 	})

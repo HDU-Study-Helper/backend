@@ -16,6 +16,7 @@ const ControlCourseBatchBytes = 8 << 20
 
 type controlSealEvent struct {
 	id, round, owner, source string
+	afterFirst               bool
 	raw                      []byte
 	change                   model.ControlChange
 }
@@ -26,15 +27,19 @@ type controlSealGroup struct {
 }
 
 func sealControlBatches(ctx context.Context, tx pgx.Tx) error {
+	return sealControlRoundBatches(ctx, tx, "")
+}
+
+func sealControlRoundBatches(ctx context.Context, tx pgx.Tx, round string) error {
 	// Do not limit events: a global row limit could split a course between Seal calls.
-	rows, err := tx.Query(ctx, `SELECT e.id,e.round_id,e.owner_id,e.source,e.payload FROM control_events e JOIN control_rounds r ON r.id=e.round_id WHERE e.batch_id IS NULL AND r.status<>'refreshing' ORDER BY e.round_id,e.owner_id,e.source,e.created_at,e.id`)
+	rows, err := tx.Query(ctx, `SELECT e.id,e.round_id,e.owner_id,e.source,e.payload,e.after_first_click FROM control_events e JOIN control_rounds r ON r.id=e.round_id WHERE e.batch_id IS NULL AND r.status<>'refreshing' AND ($1='' OR e.round_id=$1) ORDER BY e.round_id,e.owner_id,e.source,e.after_first_click,e.created_at,e.id`, round)
 	if err != nil {
 		return err
 	}
 	all := []controlSealEvent{}
 	for rows.Next() {
 		var v controlSealEvent
-		if err = rows.Scan(&v.id, &v.round, &v.owner, &v.source, &v.raw); err != nil {
+		if err = rows.Scan(&v.id, &v.round, &v.owner, &v.source, &v.raw, &v.afterFirst); err != nil {
 			rows.Close()
 			return err
 		}
@@ -47,7 +52,7 @@ func sealControlBatches(ctx context.Context, tx pgx.Tx) error {
 	}
 	for len(all) > 0 {
 		n := 1
-		for n < len(all) && all[n].round == all[0].round && all[n].owner == all[0].owner && all[n].source == all[0].source {
+		for n < len(all) && all[n].round == all[0].round && all[n].owner == all[0].owner && all[n].source == all[0].source && all[n].afterFirst == all[0].afterFirst {
 			n++
 		}
 		events := all[:n]
@@ -69,6 +74,11 @@ func sealControlBatches(ctx context.Context, tx pgx.Tx) error {
 				}
 				groups[idx].events = append(groups[idx].events, v)
 			}
+		} else if events[0].source == "dws" {
+			groups, err = groupDWSControlEvents(ctx, tx, events)
+			if err != nil {
+				return err
+			}
 		} else {
 			groups = append(groups, controlSealGroup{first: events[0], events: events})
 		}
@@ -84,7 +94,9 @@ func sealControlBatches(ctx context.Context, tx pgx.Tx) error {
 					count++
 				}
 				status, code := "pending", ""
-				if course && size > ControlCourseBatchBytes {
+				if g.scope != nil && g.scope.Kind == "unresolved_group" {
+					status, code = "blocked", "DWS_GROUP_UNRESOLVED"
+				} else if course && size > ControlCourseBatchBytes {
 					status, code = "blocked", "COURSE_INPUT_TOO_LARGE"
 				} else if !course && size > 44000 {
 					status, code = "blocked", "EVENT_TOO_LARGE"
@@ -106,7 +118,7 @@ func sealControlBatches(ctx context.Context, tx pgx.Tx) error {
 					}
 				}
 				id := newID()
-				if _, err = tx.Exec(ctx, `INSERT INTO control_batches(id,round_id,owner_id,source,status,changes,change_count,error_code,batch_scope)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, g.first.round, g.first.owner, g.first.source, status, raw, count, code, scope); err != nil {
+				if _, err = tx.Exec(ctx, `INSERT INTO control_batches(id,round_id,owner_id,source,status,changes,change_count,error_code,batch_scope,after_first_click)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, id, g.first.round, g.first.owner, g.first.source, status, raw, count, code, scope, g.first.afterFirst); err != nil {
 					return err
 				}
 				if _, err = tx.Exec(ctx, `UPDATE control_events SET batch_id=$1 WHERE id=ANY($2::text[]) AND batch_id IS NULL`, id, ids); err != nil {

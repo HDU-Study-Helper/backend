@@ -22,7 +22,7 @@ func TestControlPersistentManualQueue(t *testing.T) {
 	repo := db.Control()
 	round, e := repo.StartRound(ctx, "instance")
 	must(t, e)
-	changes := []model.ControlChange{{Operation: "created", Resource: "message", RecordID: "m1", After: json.RawMessage(`{"text":"真实消息","token":"private","url":"https://example.org/view?token=private&id=1"}`), OccurredAt: time.Now().UTC()}}
+	changes := []model.ControlChange{{Operation: "created", Resource: "message", ConnectionID: "fixture-dws-connection", GroupID: "fixture-dws-group", RecordID: "m1", After: json.RawMessage(`{"text":"真实消息","token":"private","url":"https://example.org/view?token=private&id=1"}`), OccurredAt: time.Now().UTC()}}
 	must(t, db.transaction(ctx, func(tx pgx.Tx) error {
 		return captureControl(model.WithControlRound(ctx, round), tx, u.ID, "dws", changes)
 	}))
@@ -129,7 +129,7 @@ func TestControlRestartAndPartition(t *testing.T) {
 	must(t, e)
 	must(t, db.transaction(ctx, func(tx pgx.Tx) error {
 		for _, s := range []string{"chaoxing", "dws"} {
-			if e := captureControl(model.WithControlRound(ctx, round), tx, u.ID, s, []model.ControlChange{{Operation: "created", RecordID: s, Resource: "message", After: json.RawMessage(`{"text":"hello"}`)}}); e != nil {
+			if e := captureControl(model.WithControlRound(ctx, round), tx, u.ID, s, []model.ControlChange{{Operation: "created", ConnectionID: "fixture-" + s + "-connection", GroupID: "fixture-group", RecordID: s, Resource: "message", After: json.RawMessage(`{"text":"hello"}`)}}); e != nil {
 				return e
 			}
 		}
@@ -247,16 +247,25 @@ func TestControlEndToEndParallelPlatformsSerialWorkflow(t *testing.T) {
 			time.Sleep(50 * time.Millisecond)
 			defer func() { mu.Lock(); triggerActive--; mu.Unlock() }()
 			var input struct {
-				Changes []model.ControlChange `json:"changes"`
+				SelectionProtocol string `json:"selection_protocol"`
+				Changes           []struct {
+					Index int `json:"index"`
+				} `json:"changes"`
 			}
 			if e := json.Unmarshal(envelope.Input, &input); e != nil {
 				return f.ModelResponse{}, e
 			}
-			ids := []string{}
-			for _, v := range input.Changes {
-				ids = append(ids, v.ID)
+			if input.SelectionProtocol != "indices_v1" {
+				t.Fatal("missing Trigger index protocol")
 			}
-			return done(map[string]any{"decision": "TRIGGER", "reason": "通知变化", "relevant_change_ids": ids}), nil
+			indices := []int{}
+			for i, v := range input.Changes {
+				if v.Index != i+1 {
+					t.Fatal("Trigger indices not in input order")
+				}
+				indices = append(indices, v.Index)
+			}
+			return done(map[string]any{"decision": "TRIGGER", "reason": "通知变化", "relevant_indices": indices}), nil
 		case "filter":
 			var itemInput struct {
 				ItemID string `json:"item_id"`
@@ -347,7 +356,7 @@ func TestControlEndToEndParallelPlatformsSerialWorkflow(t *testing.T) {
 	must(t, e)
 	must(t, db.transaction(ctx, func(tx pgx.Tx) error {
 		for _, source := range []string{"chaoxing", "dws"} {
-			if e := captureControl(model.WithControlRound(ctx, round), tx, u.ID, source, []model.ControlChange{{Operation: "created", Resource: "message", RecordID: source, After: json.RawMessage(`{"text":"作业通知"}`), OccurredAt: time.Now().UTC()}}); e != nil {
+			if e := captureControl(model.WithControlRound(ctx, round), tx, u.ID, source, []model.ControlChange{{Operation: "created", Resource: "message", ConnectionID: "fixture-" + source + "-connection", GroupID: "fixture-group", RecordID: source, After: json.RawMessage(`{"text":"作业通知"}`), OccurredAt: time.Now().UTC()}}); e != nil {
 				return e
 			}
 		}

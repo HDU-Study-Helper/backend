@@ -17,6 +17,7 @@ import (
 	"time"
 
 	f "academic/agent/framework"
+	"academic/backend/internal/agent"
 	"academic/backend/internal/agentadmin"
 	"academic/backend/internal/credential"
 	"academic/backend/internal/dbbridge"
@@ -428,7 +429,7 @@ func executeCourses(ctx context.Context, o options, db *dbbridge.DB, target *pgx
 		}
 		defer func() { <-slots }()
 		callCtx, cancel := context.WithTimeout(ctx, o.timeout)
-		result, callErr := console.Service.Run(callCtx, c.Owner, f.RunRequest{AgentID: a.ID, Trigger: f.UserMessage, Input: raw})
+		result, callErr := console.Service.Run(agent.WithLearnerStage(callCtx, c.Owner, "INITIALIZE", ""), c.Owner, f.RunRequest{AgentID: a.ID, Trigger: f.SystemEvent, Input: raw})
 		cancel()
 		entry.RunID, entry.Output, entry.Error = result.RunID, result.Output, f.SafeError(callErr)
 		cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)

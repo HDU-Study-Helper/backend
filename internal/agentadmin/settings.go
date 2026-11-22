@@ -17,15 +17,17 @@ import (
 )
 
 type ProviderSettings struct {
-	Name           string `json:"name"`
-	BaseURL        string `json:"base_url"`
-	DefaultModel   string `json:"default_model"`
-	APIKey         string `json:"api_key,omitempty"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
-	MaxConcurrent  int    `json:"max_concurrent"`
-	Retries        int    `json:"retries"`
-	HasAPIKey      bool   `json:"has_api_key"`
-	ClearAPIKey    bool   `json:"clear_api_key,omitempty"`
+	Name                   string `json:"name"`
+	BaseURL                string `json:"base_url"`
+	APIProtocol            string `json:"api_protocol,omitempty"`
+	DefaultModel           string `json:"default_model"`
+	DefaultReasoningEffort string `json:"default_reasoning_effort,omitempty"`
+	APIKey                 string `json:"api_key,omitempty"`
+	TimeoutSeconds         int    `json:"timeout_seconds"`
+	MaxConcurrent          int    `json:"max_concurrent"`
+	Retries                int    `json:"retries"`
+	HasAPIKey              bool   `json:"has_api_key"`
+	ClearAPIKey            bool   `json:"clear_api_key,omitempty"`
 }
 type SearchSettings struct {
 	BaseURL        string `json:"base_url"`
@@ -37,12 +39,13 @@ type SearchSettings struct {
 }
 type Settings struct {
 	// Server-maintained legacy defaults, encrypted with settings; never accepted from clients.
-	LegacyModels map[string][]string `json:"legacy_models,omitempty"`
-	Providers    []ProviderSettings  `json:"providers"`
-	Search       SearchSettings      `json:"search"`
-	Version      int                 `json:"version"`
-	Writable     bool                `json:"writable"`
-	DemoEnabled  bool                `json:"demo_enabled"`
+	LegacyModels    map[string][]string `json:"legacy_models,omitempty"`
+	Providers       []ProviderSettings  `json:"providers"`
+	DefaultProvider string              `json:"default_provider,omitempty"`
+	Search          SearchSettings      `json:"search"`
+	Version         int                 `json:"version"`
+	Writable        bool                `json:"writable"`
+	DemoEnabled     bool                `json:"demo_enabled"`
 }
 type SettingsManager struct {
 	mu        sync.RWMutex
@@ -99,12 +102,20 @@ func (s *SettingsManager) build(config Settings) (map[string]f.ModelProvider, f.
 	providers := map[string]f.ModelProvider{}
 	names := map[string]bool{}
 	for _, p := range config.Providers {
+		switch p.DefaultReasoningEffort {
+		case "", "off", "low", "high", "max":
+		default:
+			return nil, nil, f.Fail("INVALID_ARGUMENT", "默认思考强度请选择不指定、关闭、low、high 或 max")
+		}
+		if p.APIProtocol != "" && p.APIProtocol != "chat_completions" && p.APIProtocol != "responses" {
+			return nil, nil, f.Fail("INVALID_ARGUMENT", "模型接口协议只能是 Chat Completions 或 Responses")
+		}
 		if !regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`).MatchString(p.Name) || p.Name == "demo" || names[p.Name] || !endpoint(p.BaseURL) || len(p.APIKey) > 4096 || strings.ContainsAny(p.APIKey, "\r\n") || p.TimeoutSeconds < 1 || p.TimeoutSeconds > 600 || p.MaxConcurrent < 0 || p.MaxConcurrent > 32 || p.Retries < 0 || p.Retries > 5 || len(p.DefaultModel) > 256 {
 			return nil, nil, f.Fail("INVALID_ARGUMENT", "模型服务名称、地址或超时配置无效")
 		}
 		names[p.Name] = true
 		if p.APIKey != "" {
-			provider, err := f.NewOpenAIProvider(f.HTTPConfig{BaseURL: p.BaseURL, APIKey: p.APIKey, Timeout: time.Duration(p.TimeoutSeconds) * time.Second, MaxConcurrent: p.MaxConcurrent, Retries: p.Retries})
+			provider, err := f.NewOpenAIProvider(f.HTTPConfig{BaseURL: p.BaseURL, APIKey: p.APIKey, Timeout: time.Duration(p.TimeoutSeconds) * time.Second, MaxConcurrent: p.MaxConcurrent, Retries: p.Retries, APIProtocol: p.APIProtocol})
 			if err != nil {
 				return nil, nil, err
 			}
@@ -206,6 +217,11 @@ func (s *SettingsManager) Save(ctx context.Context, input Settings) (Settings, e
 	if err != nil {
 		return Settings{}, err
 	}
+	if input.DefaultProvider != "" {
+		if _, err := configuredProvider(input.Providers, input.DefaultProvider); err != nil {
+			return Settings{}, f.Fail("INVALID_ARGUMENT", "请选择已配置密钥和默认模型的服务，或清空默认模型服务")
+		}
+	}
 	plain, err := json.Marshal(input)
 	if err != nil {
 		return Settings{}, err
@@ -239,6 +255,31 @@ func (s *SettingsManager) ResolveProvider(name string) f.ModelProvider {
 	return s.providers[name]
 }
 
+// configuredProvider never falls through from an explicitly selected service to
+// another service. If no default is set, a single ready service is unambiguous.
+func configuredProvider(providers []ProviderSettings, selected string) (string, error) {
+	var ready string
+	for _, p := range providers {
+		if p.APIKey == "" || strings.TrimSpace(p.DefaultModel) == "" {
+			continue
+		}
+		if selected != "" {
+			if p.Name == selected {
+				return p.Name, nil
+			}
+			continue
+		}
+		if ready != "" {
+			return "", f.Fail("MODEL_SERVICE_SELECTION_REQUIRED", "有多个可用模型服务，请在框架配置中选择默认模型服务")
+		}
+		ready = p.Name
+	}
+	if ready == "" {
+		return "", f.Fail("PROVIDER_ERROR", "默认模型服务不可用，请检查密钥和默认模型")
+	}
+	return ready, nil
+}
+
 // ResolveModel snapshots provider credentials and default model together. Legacy models
 // matching a current or former default inherit; explicit custom always stays pinned.
 func (s *SettingsManager) ResolveModel(config f.ModelConfig) (f.ModelProvider, f.ModelConfig, error) {
@@ -247,6 +288,13 @@ func (s *SettingsManager) ResolveModel(config f.ModelConfig) (f.ModelProvider, f
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if config.Provider == "@configured" {
+		name, err := configuredProvider(s.settings.Providers, s.settings.DefaultProvider)
+		if err != nil {
+			return nil, config, err
+		}
+		config.Provider = name
+	}
 	var settings *ProviderSettings
 	for i := range s.settings.Providers {
 		if s.settings.Providers[i].Name == config.Provider {
@@ -277,7 +325,33 @@ func (s *SettingsManager) ResolveModel(config f.ModelConfig) (f.ModelProvider, f
 	if strings.TrimSpace(config.Model) == "" {
 		return nil, config, f.Fail("PROVIDER_ERROR", "模型服务未设置默认模型，请配置默认模型或选择自定义模型")
 	}
+	config, err := resolveReasoningEffort(config, settings.DefaultReasoningEffort)
+	if err != nil {
+		return nil, config, err
+	}
 	return provider, config, nil
+}
+
+// resolveReasoningEffort applies the selected service default to any model on
+// that service unless the agent supplied its own value (including explicit null).
+// The parameters map is copied so resolving a Run cannot mutate stored Agent data.
+func resolveReasoningEffort(config f.ModelConfig, defaultEffort string) (f.ModelConfig, error) {
+	parameters := make(map[string]json.RawMessage, len(config.Parameters)+1)
+	for key, value := range config.Parameters {
+		parameters[key] = append(json.RawMessage(nil), value...)
+	}
+	config.Parameters = parameters
+	if _, exists := parameters["reasoning_effort"]; !exists && defaultEffort != "" {
+		if defaultEffort == "off" {
+			parameters["reasoning_effort"] = json.RawMessage(`null`)
+		} else {
+			parameters["reasoning_effort"], _ = json.Marshal(defaultEffort)
+		}
+	}
+	if err := f.ValidateModelParameters(parameters); err != nil {
+		return config, err
+	}
+	return config, nil
 }
 
 // Search methods snapshot one immutable provider so config changes do not race in-flight requests.

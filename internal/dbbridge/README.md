@@ -24,6 +24,8 @@ Agent 管理页新增 v6：`DB.AgentAdmin()` 保存加密配置密文及版本�
 
 教务补充：迁移v7仅扩充 platform_connections.source CHECK 允许 jwxt；旧迁移不变。教务复用平台 Repository 保存加密会话及 course/schedule，按 resource:year:term 存 checkpoint；Targets SQL 排除 jwxt，手动 Acquire/Commit 仍校验用户、连接与租约。新增实现仅做离线验收，本轮未执行数据库迁移或真实数据库测试。
 
+教务课程读取还附带独立的 `course_delivery` 衍生字段：按用户明确默认规则，仅 `jwxt/course` 且 `schedule_raw`、`location_raw`、`location` 均未提供或为空白/`--`/`—`/`-` 时，返回 `{mode:"online",basis:"default_missing_time_and_location",is_default:true,label:"线上课程（默认）"}`。非字符串异常值及“待定”等不在占位白名单中的文本不套默认。该标记不是学校证实，读取时计算，不修改原始 content/hash/observed_at，不迁移或回填数据库；后续原字段补齐时自然不再显示。平台 records API 与非DWS归档预览复用同一读取路径。
+
 ## 日程（v8）
 
 Schedules()实现model.ScheduleRepository，全部SQL在schedules.go。schedules仅新增一张表，按用户/学期/教学周索引。Create/Update/Delete与完整课表提交复用用户行锁；TIMETABLE按来源身份唯一。platformRepo.CommitTimetable复用原Commit事务、连接状态和fencing校验，将完整课表归档、TIMETABLE刷新、Session/checkpoint一起提交，失败整体回滚。修改覆盖与历史在mod JSONB中，不清理USER/AGENT。测试库中覆盖实际PostgreSQL迁移、同步、回滚、隔离和HTTP接线，详见../schedule/README.md。

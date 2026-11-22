@@ -86,6 +86,33 @@ func TestDataQueryCatalogSafetyAndANDCompatibility(t *testing.T) {
 	}
 }
 
+func TestDataQueryUnavailableFieldsAreRecoverableArguments(t *testing.T) {
+	for _, dataset := range []string{"dws_messages", "academic_items", "platform_records"} {
+		set := agentDatasets()[dataset]
+		for _, field := range []string{"labels", "session", "password", "unknown_field"} {
+			_, err := queryProjection(set, []string{field})
+			code(t, err, "INVALID_ARGUMENT")
+			args := []any{"owner"}
+			_, err = queryFilters(set, []f.Filter{{Field: field, Operator: "eq", Value: "x"}}, &args)
+			code(t, err, "INVALID_ARGUMENT")
+			if len(args) != 1 {
+				t.Fatal("unavailable field reached filter argument construction")
+			}
+		}
+		_, err := queryProjection(set, []string{set.names[0], set.names[0]})
+		code(t, err, "INVALID_ARGUMENT")
+	}
+	data := &agentData{}
+	for _, q := range []f.Query{{Dataset: "agent_memories", Fields: []string{"content"}, Limit: 1}, {Dataset: "dws_messages", Fields: []string{"labels"}, Limit: 1}} {
+		scope := f.Scope{OwnerID: "owner"}
+		if q.Dataset == "dws_messages" {
+			scope.OwnerID = ""
+		}
+		_, err := data.queryDataset(context.Background(), scope, q)
+		code(t, err, "PERMISSION_DENIED")
+	}
+}
+
 func TestKeywordSearchBoundedSummariesPreserveCursor(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
@@ -103,7 +130,7 @@ func TestKeywordSearchBoundedSummariesPreserveCursor(t *testing.T) {
 		must(t, err)
 		raw, err := json.Marshal(result)
 		must(t, err)
-		if len(raw) > 90*1024 {
+		if len(raw) > 64*1024 {
 			t.Fatal("search response budget exceeded", len(raw))
 		}
 		for _, hit := range result.Hits {

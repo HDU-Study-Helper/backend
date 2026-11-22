@@ -129,7 +129,7 @@ func TestAgentRepositoryCRUDIsolationAndVersions(t *testing.T) {
 	must(t, db.Migrate(ctx))
 	var version int
 	must(t, db.pool.QueryRow(ctx, `SELECT max(version) FROM dbbridge_migrations`).Scan(&version))
-	if version != 15 {
+	if version != 18 {
 		t.Fatal("migration version", version)
 	}
 }
@@ -343,7 +343,7 @@ func TestAgentDataReadonlyWhitelistAndOwnerScope(t *testing.T) {
 	}
 	q.Fields = []string{"session"}
 	_, err = data.Query(ctx, f.Scope{OwnerID: u.ID}, q)
-	code(t, err, "PERMISSION_DENIED")
+	code(t, err, "INVALID_ARGUMENT")
 	q.Dataset = "agent_memories"
 	_, err = data.Query(ctx, f.Scope{OwnerID: u.ID}, q)
 	code(t, err, "PERMISSION_DENIED")

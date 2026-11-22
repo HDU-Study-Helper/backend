@@ -59,7 +59,7 @@ func TestCollectionHeartbeatOnlyRenewsOwnedRefreshingRound(t *testing.T) {
 	page := func(record string) {
 		t.Helper()
 		must(t, db.transaction(ctx, func(tx pgx.Tx) error {
-			return captureControl(model.WithControlRound(ctx, round), tx, user.ID, "dws", []model.ControlChange{{Operation: "created", Resource: "message", RecordID: record, After: json.RawMessage(`{"text":"fixture"}`)}})
+			return captureControl(model.WithControlRound(ctx, round), tx, user.ID, "dws", []model.ControlChange{{Operation: "created", Resource: "message", ConnectionID: "heartbeat-connection", GroupID: "heartbeat-group", RecordID: record, After: json.RawMessage(`{"text":"fixture"}`)}})
 		}))
 	}
 	page("first-page")

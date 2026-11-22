@@ -45,12 +45,9 @@ func TestPostgresControlCourseOver5000WithinBudget(t *testing.T) {
 }
 
 func TestPostgresControlCourseMigrationPreservesHistoricBatches(t *testing.T) {
-	db := testDB(t)
+	db := testDBVersion(t, 14)
 	ctx := context.Background()
 	u := fixtureUser(t, db, "course-migration", model.RoleUser)
-	// Recreate only the pre-V15 surface inside this test's isolated schema.
-	_, err := db.pool.Exec(ctx, `ALTER TABLE control_batches DROP COLUMN batch_scope; DELETE FROM dbbridge_migrations WHERE version=15`)
-	must(t, err)
 	round, err := db.Control().StartRound(ctx, "test")
 	must(t, err)
 	changes := json.RawMessage(`[{"change_id":"historic","resource":"message","after":{"title":"Historic"}}]`)
@@ -65,7 +62,7 @@ func TestPostgresControlCourseMigrationPreservesHistoricBatches(t *testing.T) {
 	}
 	var n int
 	must(t, db.pool.QueryRow(ctx, `SELECT count(*) FROM dbbridge_migrations`).Scan(&n))
-	if n != 15 {
+	if n != 18 {
 		t.Fatal("migration ledger", n)
 	}
 }

@@ -69,6 +69,9 @@ func captureControl(ctx context.Context, tx pgx.Tx, owner, source string, change
 	if len(changes) == 0 {
 		return nil
 	}
+	if e := firstLock(ctx, tx, owner); e != nil {
+		return e
+	}
 	round := model.ControlRoundID(ctx)
 	if round == "" {
 		round = newID()
@@ -85,7 +88,7 @@ func captureControl(ctx context.Context, tx pgx.Tx, owner, source string, change
 		if e != nil {
 			return e
 		}
-		if _, e = tx.Exec(ctx, `INSERT INTO control_events(id,round_id,owner_id,source,payload)VALUES($1,$2,$3,$4,$5)`, c.ID, round, owner, source, raw); e != nil {
+		if _, e = tx.Exec(ctx, `INSERT INTO control_events(id,round_id,owner_id,source,payload,after_first_click)VALUES($1,$2,$3,$4,$5,EXISTS(SELECT 1 FROM first_runs WHERE owner_id=$3))`, c.ID, round, owner, source, raw); e != nil {
 			return e
 		}
 	}
@@ -112,6 +115,9 @@ func (r *controls) Seal(ctx context.Context) error {
 			return e
 		}
 		if e := sealControlBatches(ctx, tx); e != nil {
+			return e
+		}
+		if _, e := tx.Exec(ctx, `UPDATE control_batches b SET status='queued',updated_at=now() FROM first_runs f JOIN control_batches first_batch ON first_batch.id=f.batch_id WHERE b.owner_id=f.owner_id AND b.after_first_click AND b.status='pending' AND first_batch.status='succeeded'`); e != nil {
 			return e
 		}
 		return seedControlItems(ctx, tx)

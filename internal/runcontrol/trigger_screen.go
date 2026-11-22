@@ -1,9 +1,12 @@
 package runcontrol
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
 
 	f "academic/agent/framework"
 	"academic/backend/internal/model"
@@ -21,6 +24,15 @@ func triggerPages(b model.ControlBatch) ([]triggerPage, error) {
 		return []triggerPage{{input: raw, changes: b.Changes}}, err
 	}
 	pages := []triggerPage{}
+	// Reject ambiguous original identities before pagination; each page's
+	// short references must map to exactly one frozen change across the batch.
+	seen := map[string]bool{}
+	for _, change := range b.Changes {
+		if change.ID == "" || seen[change.ID] {
+			return nil, f.Fail("INVALID_TRIGGER_INPUT", "change IDs must be nonempty and unique before numbering")
+		}
+		seen[change.ID] = true
+	}
 	for start := 0; start < len(b.Changes) || start == 0; {
 		end := start
 		var input json.RawMessage
@@ -66,6 +78,61 @@ func triggerPages(b model.ControlBatch) ([]triggerPage, error) {
 	return pages, nil
 }
 
+// validateTriggerIndices translates page-local model references into the
+// existing persisted decision format. Numbers never reach downstream routing.
+func validateTriggerIndices(raw []byte, changes []model.ControlChange) (triggerDecision, error) {
+	var wire struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+		Indices  []int  `json:"relevant_indices"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&wire) != nil || decoder.Decode(new(any)) != io.EOF {
+		return triggerDecision{}, f.Fail("INVALID_TRIGGER_OUTPUT", "invalid Trigger index JSON")
+	}
+	if strings.TrimSpace(wire.Reason) == "" || wire.Indices == nil {
+		return triggerDecision{}, f.Fail("INVALID_TRIGGER_OUTPUT", "reason and relevant_indices are required")
+	}
+	if wire.Decision != "TRIGGER" && wire.Decision != "UNCERTAIN" && wire.Decision != "IGNORE" {
+		return triggerDecision{}, f.Fail("INVALID_TRIGGER_OUTPUT", "decision must be TRIGGER, UNCERTAIN or IGNORE")
+	}
+	if wire.Decision == "IGNORE" && len(wire.Indices) != 0 {
+		return triggerDecision{}, f.Fail("INVALID_TRIGGER_OUTPUT", "IGNORE requires relevant_indices=[]")
+	}
+	if wire.Decision != "IGNORE" && len(wire.Indices) == 0 {
+		return triggerDecision{}, f.Fail("INVALID_TRIGGER_OUTPUT", wire.Decision+" requires at least one current-page index")
+	}
+	ids := make([]string, 0, len(wire.Indices))
+	previous := 0
+	for position, index := range wire.Indices {
+		if index < 1 || index > len(changes) {
+			return triggerDecision{}, f.Fail("INVALID_TRIGGER_OUTPUT", fmt.Sprintf("relevant_indices[%d]=%d is outside this page's selectable range [1,%d]; this page contains %d changes, and page.index/page.count are not selection indices", position, index, len(changes), len(changes)))
+		}
+		if index <= previous {
+			return triggerDecision{}, f.Fail("INVALID_TRIGGER_OUTPUT", fmt.Sprintf("relevant_indices[%d]=%d must be greater than previous index %d; this page contains %d changes and indices must be unique and in input order", position, index, previous, len(changes)))
+		}
+		if changes[index-1].ID == "" {
+			return triggerDecision{}, f.Fail("INVALID_TRIGGER_INPUT", "numbered change has no original ID")
+		}
+		ids = append(ids, changes[index-1].ID)
+		previous = index
+	}
+	// Reuse persisted decision validation for decision/list semantics and ID
+	// integrity. Historical stored relevant_change_ids remain readable.
+	return validateTrigger(mustJSON(triggerDecision{Decision: wire.Decision, Reason: wire.Reason, IDs: ids}), changes)
+}
+
+func triggerCorrectionMessage(err error, count int) string {
+	// Validator messages can include model-supplied decision values. Bound the
+	// diagnostic rather than echoing an arbitrarily long rejected response.
+	diagnostic := []rune(err.Error())
+	if len(diagnostic) > 768 {
+		diagnostic = append(diagnostic[:768], []rune("…")...)
+	}
+	return fmt.Sprintf("校验失败：%s。本页selection_count=%d，selection_bounds=[1,%d]；只能选择当前changes中实际存在的index，page.index/page.count是分页信息，不是可选编号上限。只输出decision=TRIGGER/UNCERTAIN/IGNORE,reason,relevant_indices；编号须为整数、按输入顺序且不重复。IGNORE必须空数组，其他判断必须非空；不得输出真实ID或额外字段。", string(diagnostic), count, count)
+}
+
 func (s *Service) screenTrigger(ctx context.Context, b model.ControlBatch, agentID string) (triggerDecision, json.RawMessage, error) {
 	pages, err := triggerPages(b)
 	if err != nil {
@@ -79,15 +146,15 @@ func (s *Service) screenTrigger(ctx context.Context, b model.ControlBatch, agent
 		if err != nil {
 			return out, nil, err
 		}
-		decision, err := validateTrigger([]byte(result.Output), page.changes)
+		decision, err := validateTriggerIndices([]byte(result.Output), page.changes)
 		if err != nil {
 			var correction map[string]any
 			if err := json.Unmarshal(page.input, &correction); err != nil {
 				return out, nil, err
 			}
-			correction["validation_error"] = "只输出decision=TRIGGER/UNCERTAIN/IGNORE,reason,relevant_change_ids；ID不得重复、仅来自本页change_id。IGNORE必须空数组，不得额外字段。"
-			// The invalid model response can be arbitrarily large. A fixed error
-			// describes the repair without echoing it into the next request.
+			correction["validation_error"] = triggerCorrectionMessage(err, len(page.changes))
+			// The invalid model response can be arbitrarily large. Report only a
+			// bounded validation diagnostic plus the actual current-page bounds.
 			input := mustJSON(correction)
 			if courseBatch(b) && b.Scope.Kind == "course" && len(input) > triggerPageBytes {
 				return out, nil, f.Fail("TRIGGER_INPUT_TOO_LARGE", "trigger correction exceeds page budget")
@@ -96,7 +163,7 @@ func (s *Service) screenTrigger(ctx context.Context, b model.ControlBatch, agent
 			if err != nil {
 				return out, nil, err
 			}
-			decision, err = validateTrigger([]byte(result.Output), page.changes)
+			decision, err = validateTriggerIndices([]byte(result.Output), page.changes)
 			if err != nil {
 				return out, nil, err
 			}

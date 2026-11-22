@@ -1,6 +1,6 @@
 # HDU-Study-Helper Backend v0.1
 
-Go 1.24 + chi + PostgreSQL 模块化单体。产品范围见 `../PROJECT.md`；本版实现用户管理、DWS，以及学习通/MOOC/U校园适配器和中央采集存储，另提供随 App 初始化的通用 Agent Framework 和临时 Agent 管理后台；具体业务 Agent 和真实主动通知渠道仍未实现。复用 chi、pgx、bcrypt；使用 x/net/html 用于 HTML 解析、coder/websocket 用于 U校园官方 SSO、go-qrcode 用于扫码 URI 渲染。
+Go 1.24 + chi + PostgreSQL 模块化单体。产品范围见 `../PROJECT.md`；本版实现用户管理、DWS，以及学习通/MOOC/U校园适配器和中央采集存储，另提供随 App 初始化的通用 Agent Framework 和临时 Agent 管理后台；当前默认角色为 Trigger、Filter、Learner、Worker、Chat。后端支持主动对话、课程工作接续、公开待办、应用内通知与定时任务；前端交互与设备推送仍未接入。详见[对话协议](internal/chatapi/README.md)和[Worker 可写产物](internal/actions/README.md)。复用 chi、pgx、bcrypt；使用 x/net/html 用于 HTML 解析、coder/websocket 用于 U校园官方 SSO、go-qrcode 用于扫码 URI 渲染。
 
 `internal` 各目录职责、实现状态、依赖和修改入口见 [internal/README.md](internal/README.md)。
 
@@ -13,7 +13,7 @@ Go 1.24 + chi + PostgreSQL 模块化单体。产品范围见 `../PROJECT.md`；�
 | db-bridge (`internal/dbbridge`) | 集中连接、参数化 SQL、事务迁移账本、User/DWS Repository；租约 fencing、业务最新状态增量upsert与原子水位提交 | 真实独立 PostgreSQL 集成测试，包括回滚、重试去重、跨用户拒绝、撤权及旧任务不能提交 |
 | 用户管理 (`internal/users`) | 用户增删查改、bcrypt、登录/登出、修改密码、管理员权限、最后管理员保护、会话撤销、CSRF、登录限流、中文 Web 管理页 | 单元测试、race 检查及真实 HTTP+PostgreSQL 冒烟；浏览器视觉和交互尚未人工验证 |
 | DWS (`internal/dws`) | 共享固定官方二进制、每连接 Profile/Token 加密工作区、显式授权群、持久化任务、定时轮询、固定时间窗分页、按对象最新状态去重更新、规则分类、同群上下文、附件读取/归档 | 官方 help/本地 schema/源码和脱敏 fake executor；真实 HTTP 验证连接创建/权限。没有使用真实账号读取，真实群/附件/双账号刷新恢复尚未验证 |
-| Agent Framework (`../agent/framework` + `internal/agent`) | 通用 Runtime、20 个工具、内部 Bridge 调度、Memory V0.2 三种归属/关联、Workflow 版本和 V9 迁移 | Mock Provider + 真实 PostgreSQL 与浏览器验收；含临时管理页，不含业务 Agent；[详细说明](../agent/framework/README.md) |
+| Agent Framework (`../agent/framework` + `internal/agent`) | 通用 Runtime、20 个工具、内部 Bridge 调度、Memory V0.2 三种归属/关联、Workflow 版本和 V9 迁移 | Mock Provider + 真实 PostgreSQL 与浏览器验收；含管理页；业务角色由后端按用户补齐；[详细说明](../agent/framework/README.md) |
 | bridge (`internal/bridge`) | v1 请求/响应、进程内 Port 接口、认证 Demo echo | 单元及 HTTP 测试；Agent Port 实现位于 internal/agent，无消息总线 |
 
 DWS 不是全部钉钉能力已验证的承诺；官方调研记录群历史可能受服务端字段映射或上游权限影响。错误会明确返回，不用伪造数据替代。详细范围、协议差异、限制见 `internal/dws/README.md`。

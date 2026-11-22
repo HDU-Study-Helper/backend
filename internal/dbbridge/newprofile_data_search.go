@@ -227,6 +227,7 @@ func (r *agentData) SearchKeywords(ctx context.Context, scope f.Scope, request f
 			set := sets[name]
 			args := []any{scope.OwnerID}
 			where := append([]string{}, set.where...)
+			where = append(where, firstDataBounds(ctx, scope.OwnerID, name, &args)...)
 			where = append(where, keywordPredicate(set, keywords, &args))
 			var count int
 			if err := tx.QueryRow(ctx, "SELECT count(*) FROM "+set.from+" WHERE "+strings.Join(where, " AND "), args...).Scan(&count); err != nil {
@@ -242,6 +243,7 @@ func (r *agentData) SearchKeywords(ctx context.Context, scope f.Scope, request f
 			set := sets[name]
 			args := []any{scope.OwnerID}
 			where := append([]string{}, set.where...)
+			where = append(where, firstDataBounds(ctx, scope.OwnerID, name, &args)...)
 			where = append(where, keywordPredicate(set, keywords, &args))
 			if index == cursor.Dataset && cursor.Key != "" {
 				args = append(args, cursor.Key)
@@ -279,7 +281,13 @@ func (r *agentData) SearchKeywords(ctx context.Context, scope f.Scope, request f
 					rows.Close()
 					return err
 				}
-				if responseBytes+len(encoded) > 80*1024 && len(result.Hits) > 0 {
+				// Keep the complete response below the normal 64 KiB tool
+				// budget, including coverage, cursor and JSON envelopes.
+				if len(encoded) > 48*1024 {
+					rows.Close()
+					return f.Fail("INVALID_ARGUMENT", "one search hit exceeds response budget; narrow the query or read selected fields by exact ID")
+				}
+				if responseBytes+len(encoded) > 48*1024 && len(result.Hits) > 0 {
 					moreDataset = index
 					break
 				}

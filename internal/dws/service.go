@@ -408,7 +408,7 @@ func safeCode(e error) string {
 	}
 	if e != nil {
 		switch e.Error() {
-		case "parse_failed", "auth_required", "budget_exceeded":
+		case "parse_failed", "auth_required", "budget_exceeded", "dws_org_denied", "dws_channel_denied", "dws_org_check_failed", "dws_token_exchange_failed", "dws_cli_save_failed", "dws_cli_after_challenge", "dws_cli_output_invalid", "dws_receipt_invalid", "dws_identity_unverified", "dws_status_failed", "dws_workspace_save_failed", "dws_connection_save_failed":
 			return e.Error()
 		}
 	}

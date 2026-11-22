@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"time"
 
@@ -243,6 +244,9 @@ func (s *Service) runLink(ctx context.Context, l *linkSession) {
 			status, code = "cancelled", ""
 		}
 	}
+	if status == "failed" {
+		slog.Warn("DWS link failed", "code", code)
+	}
 	s.finishLinkLocked(l, status, code)
 }
 func (s *Service) authorizeLink(ctx context.Context, l *linkSession) error {
@@ -343,24 +347,21 @@ func (s *Service) authorizeLink(ctx context.Context, l *linkSession) error {
 		UserID     string `json:"user_id"`
 	}
 	if json.Unmarshal(output, &receipt) != nil {
-		return errors.New("parse_failed")
+		return errors.New("dws_receipt_invalid")
 	}
 	identity := model.DWSIdentity{Profile: receipt.CorpID + ":" + receipt.UserID, CorpID: receipt.CorpID, UpstreamUserID: receipt.UserID}
 	if !receipt.Success || !receipt.TokenValid || !validProfile(identity.Profile, identity.CorpID, identity.UpstreamUserID) || (c.Profile != "" && (identity.Profile != c.Profile || identity.CorpID != c.CorpID || identity.UpstreamUserID != c.UpstreamUserID)) {
-		return errors.New("auth_required")
+		return errors.New("dws_identity_unverified")
 	}
 	// Readonly verification must select the final official identity, never a server scope ID.
 	c.Profile, c.CorpID, c.UpstreamUserID = identity.Profile, identity.CorpID, identity.UpstreamUserID
 	status, err := s.status(ctx, c, root)
-	if err != nil {
-		return err
-	}
-	if !status.TokenValid {
-		return errors.New("auth_required")
+	if err != nil || !status.TokenValid {
+		return errors.New("dws_status_failed")
 	}
 	sealed, err := s.vault.SealDirectory(l.scope.UserID, l.scope.ConnectionID, root)
 	if err != nil {
-		return err
+		return errors.New("dws_workspace_save_failed")
 	}
 	defer clear(sealed)
 	// Serialize cancellation against persistence. DB fencing independently rejects
@@ -376,6 +377,8 @@ func (s *Service) authorizeLink(ctx context.Context, l *linkSession) error {
 	err = s.repo.CompleteLink(ctx, lease, identity, sealed)
 	if err == nil {
 		s.finishLinkLocked(l, "authorized", "")
+	} else if safeCode(err) == "upstream_unavailable" {
+		return errors.New("dws_connection_save_failed")
 	}
 	return err
 }

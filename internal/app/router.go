@@ -8,6 +8,7 @@ import (
 	"academic/backend/internal/academic"
 	"academic/backend/internal/agentadmin"
 	"academic/backend/internal/bridge"
+	"academic/backend/internal/chatapi"
 	"academic/backend/internal/dws"
 	"academic/backend/internal/httpkit"
 	"academic/backend/internal/platform"
@@ -60,6 +61,9 @@ func routerWithAcademic(userService *users.Service, dwsService *dws.Service, por
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/admin", http.StatusSeeOther) })
 	if console != nil {
 		r.Get("/admin/agents", console.Page)
+		if console.ChatStore != nil {
+			r.Get("/admin/chat", chatapi.Page)
+		}
 	}
 	r.Get("/admin/tasks", scheduler.Page)
 	if archive != nil {
@@ -82,6 +86,9 @@ func routerWithAcademic(userService *users.Service, dwsService *dws.Service, por
 			}
 			if console != nil {
 				r.Mount("/agents", console.Routes())
+				if console.ChatStore != nil {
+					r.Mount("/chat", (chatapi.API{Agent: console.Service, Store: console.ChatStore, Actions: console.Actions}).Routes())
+				}
 			}
 			if inspect != nil {
 				r.Mount("/preview", inspect.Routes())

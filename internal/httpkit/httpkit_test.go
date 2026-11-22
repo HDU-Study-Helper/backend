@@ -51,6 +51,28 @@ func TestStrictDecodeAndErrorEnvelope(t *testing.T) {
 		t.Fatal("valid JSON rejected")
 	}
 }
+func TestReviewedLargerJSONLimitKeepsStrictSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		ok   bool
+	}{
+		{`{"name":"` + strings.Repeat("a", 24000) + `"}`, true},
+		{`{"name":"` + strings.Repeat("a", 140000) + `"}`, false},
+		{`{"unknown":true}`, false},
+		{`{} {}`, false},
+		{`null`, false},
+	} {
+		r := httptest.NewRequest("PUT", "/", strings.NewReader(tc.body))
+		r.Header.Set("Content-Type", "application/json")
+		var dst struct {
+			Name string `json:"name"`
+		}
+		if err := DecodeJSONLimit(httptest.NewRecorder(), r, &dst, 128<<10); (err == nil) != tc.ok {
+			t.Fatal("unexpected larger decode result", err)
+		}
+	}
+}
+
 func TestUserContextDoesNotExposeHash(t *testing.T) {
 	ctx := WithUser(context.Background(), model.User{ID: "id", Role: model.RoleAdmin, PasswordHash: "secret"})
 	u, ok := CurrentUser(ctx)

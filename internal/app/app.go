@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"academic/backend/internal/academic"
+	"academic/backend/internal/actions"
 	"academic/backend/internal/agentadmin"
 	"academic/backend/internal/bridge"
 	"academic/backend/internal/chaoxing"
@@ -27,21 +28,23 @@ import (
 	"academic/backend/internal/trigger"
 	"academic/backend/internal/ucampus"
 	"academic/backend/internal/users"
+	"encoding/json"
 )
 
 // App owns process resources. Only this composition layer knows concrete repositories.
 type App struct {
-	academic  *academic.Service
-	control   *runcontrol.Service
-	schedules *schedule.Service
-	refresh   *scheduler.Task
-	agents    *agentadmin.Console
-	config    Config
-	db        *dbbridge.DB
-	users     *users.Service
-	dws       *dws.Service
-	platforms *platform.Service
-	handler   http.Handler
+	academic       *academic.Service
+	control        *runcontrol.Service
+	schedules      *schedule.Service
+	refresh        *scheduler.Task
+	actionExecutor *actions.Executor
+	agents         *agentadmin.Console
+	config         Config
+	db             *dbbridge.DB
+	users          *users.Service
+	dws            *dws.Service
+	platforms      *platform.Service
+	handler        http.Handler
 }
 
 func New(ctx context.Context, cfg Config) (*App, error) {
@@ -62,6 +65,9 @@ func NewWithTrigger(ctx context.Context, cfg Config, handler trigger.Handler) (*
 	}()
 	if err = db.Migrate(ctx); err != nil {
 		return nil, errors.New("database migration failed")
+	}
+	if err = db.EnableDefaultRoles(ctx); err != nil {
+		return nil, errors.New("default agent initialization failed")
 	}
 	db.SetTriggerHandler(handler)
 	us, err := users.New(db.Users(), users.Config{SecureCookies: cfg.SecureCookies, Origin: cfg.PublicOrigin})
@@ -124,8 +130,31 @@ func NewWithTrigger(ctx context.Context, cfg Config, handler trigger.Handler) (*
 	if err != nil {
 		return nil, err
 	}
+	console.ChatStore, console.Actions = db.Chat(), db.Actions()
+	if err = actions.RegisterTools(console.Service.Tools, console.Actions); err != nil {
+		return nil, err
+	}
 	control := runcontrol.New(db.Control(), console.Service, db.AgentData())
+	control.Actions = console.Actions
 	app := &App{academic: academic.New(db.Academic()), control: control, config: cfg, db: db, users: us, dws: ds, platforms: ps, agents: console}
+	app.actionExecutor = &actions.Executor{Repo: db.Actions(), Agents: db.Agents(), Tools: func(ctx context.Context, j model.ClaimedAction) (string, error) {
+		if j.Input.Tool != "schedule_get" {
+			return "", model.ErrUnsupported
+		}
+		rep, e := schedules.Call(ctx, bridge.Request{Version: bridge.Version, OwnerID: j.OwnerID, Operation: "schedule.get", Payload: j.Input.Args})
+		if e != nil {
+			return "", e
+		}
+		var record model.Schedule
+		if json.Unmarshal(rep.Payload, &record) != nil || record.UserID != j.OwnerID {
+			return "", model.ErrConflict
+		}
+		return "schedule:" + record.ID, nil
+	}, Worker: func(ctx context.Context, j model.ClaimedAction) (string, error) {
+		payload, _ := json.Marshal(map[string]any{"task": j.Input.Body, "planned_job_id": j.ID, "evidence_refs": j.Input.Evidence})
+		res, e := console.Service.RunScheduledWorker(ctx, j.OwnerID, j.RunID, payload)
+		return res.RunID, e
+	}}
 	var descriptors []contract.Descriptor
 	if ps != nil {
 		descriptors = ps.Sources()
@@ -178,6 +207,9 @@ func (a *App) Run(ctx context.Context) error {
 	defer cancel()
 	var workers chan error
 	workerCount := 0
+	if a.actionExecutor != nil && !a.config.APIOnly {
+		workerCount++
+	}
 	if a.control != nil && !a.config.APIOnly {
 		workerCount++
 	}
@@ -195,6 +227,9 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	if a.control != nil && !a.config.APIOnly {
 		go func() { workers <- a.control.Run(runCtx) }()
+	}
+	if a.actionExecutor != nil && !a.config.APIOnly {
+		go func() { workers <- a.runActionJobs(runCtx) }()
 	}
 	if a.dws != nil {
 		go func() { workers <- a.dws.Run(runCtx) }()
@@ -275,4 +310,22 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	slog.Info("API stopped")
 	return runErr
+}
+
+// Execute only explicitly persisted due jobs. No queues are restored from memory
+// and a failed claimed operation is never blindly replayed by this loop.
+func (a *App) runActionJobs(ctx context.Context) error {
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick.C:
+			_, e := a.actionExecutor.RunOne(ctx)
+			if e != nil && ctx.Err() == nil {
+				slog.Warn("planned action execution failed")
+			}
+		}
+	}
 }

@@ -358,9 +358,9 @@ func (r *dws) CommitSync(ctx context.Context, l model.Lease, c model.SyncCommit)
 				unchanged++
 				continue
 			}
-			snapshots = append(snapshots, model.ControlChange{Operation: operation, Resource: "message", ConnectionID: l.Scope.ConnectionID, RecordID: m.ExternalID, Before: before, After: m.Content, OccurredAt: m.ObservedAt})
+			snapshots = append(snapshots, model.ControlChange{Operation: operation, Resource: "message", ConnectionID: l.Scope.ConnectionID, GroupID: groupID, RecordID: m.ExternalID, Before: before, After: m.Content, OccurredAt: m.ObservedAt})
 
-			if _, e := tx.Exec(ctx, `INSERT INTO dws_messages(user_id,connection_id,group_id,external_id,source_version,content_hash,content,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(user_id,connection_id,group_id,external_id) DO UPDATE SET source_version=EXCLUDED.source_version,content_hash=EXCLUDED.content_hash,content=EXCLUDED.content,observed_at=EXCLUDED.observed_at WHERE dws_messages.source_version<>EXCLUDED.source_version OR dws_messages.content_hash<>EXCLUDED.content_hash`, l.Scope.UserID, l.Scope.ConnectionID, groupID, m.ExternalID, m.SourceVersion, m.ContentHash, nonNil(m.Content), m.ObservedAt); e != nil {
+			if _, e := tx.Exec(ctx, `INSERT INTO dws_messages(user_id,connection_id,group_id,external_id,source_version,content_hash,content,observed_at,sent_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(user_id,connection_id,group_id,external_id) DO UPDATE SET source_version=EXCLUDED.source_version,content_hash=EXCLUDED.content_hash,content=EXCLUDED.content,observed_at=EXCLUDED.observed_at,sent_at=EXCLUDED.sent_at WHERE dws_messages.source_version<>EXCLUDED.source_version OR dws_messages.content_hash<>EXCLUDED.content_hash`, l.Scope.UserID, l.Scope.ConnectionID, groupID, m.ExternalID, m.SourceVersion, m.ContentHash, nonNil(m.Content), m.ObservedAt, sourceSentTime(m.Content)); e != nil {
 				return storageError(e)
 			}
 		}
@@ -429,12 +429,9 @@ func (r *dws) PutAttachment(ctx context.Context, l model.Lease, a model.Attachme
 		if e := checkLease(ctx, tx, l); e != nil {
 			return e
 		}
-		var ok bool
-		if e := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM dws_messages WHERE user_id=$1 AND connection_id=$2 AND ($3='' OR group_id=$3) AND id=$4 AND EXISTS(SELECT 1 FROM dws_groups g WHERE (g.user_id,g.connection_id,g.id)=(dws_messages.user_id,dws_messages.connection_id,dws_messages.group_id)))`, l.Scope.UserID, l.Scope.ConnectionID, l.GroupID, a.MessageID).Scan(&ok); e != nil {
+		var groupID string
+		if e := tx.QueryRow(ctx, `SELECT group_id FROM dws_messages WHERE user_id=$1 AND connection_id=$2 AND ($3='' OR group_id=$3) AND id=$4 AND EXISTS(SELECT 1 FROM dws_groups g WHERE (g.user_id,g.connection_id,g.id)=(dws_messages.user_id,dws_messages.connection_id,dws_messages.group_id))`, l.Scope.UserID, l.Scope.ConnectionID, l.GroupID, a.MessageID).Scan(&groupID); e != nil {
 			return storageError(e)
-		}
-		if !ok {
-			return model.ErrNotFound
 		}
 		var oldName, oldMedia, oldHash string
 		e := tx.QueryRow(ctx, `SELECT name,media_type,sha256 FROM dws_attachments WHERE user_id=$1 AND connection_id=$2 AND message_id=$3 AND id=$4`, l.Scope.UserID, l.Scope.ConnectionID, a.MessageID, a.ID).Scan(&oldName, &oldMedia, &oldHash)
@@ -455,7 +452,7 @@ func (r *dws) PutAttachment(ctx context.Context, l model.Lease, a model.Attachme
 		if tag.RowsAffected() > 0 {
 			after, _ := json.Marshal(map[string]string{"name": a.Name, "media_type": a.MediaType, "sha256": a.SHA256})
 			changes = append(changes, trigger.Change{UserID: l.Scope.UserID, ConnectionID: l.Scope.ConnectionID, Source: "dws", Resource: "attachment", RecordID: strconv.FormatInt(a.MessageID, 10) + ":" + a.ID, ExternalID: a.ID, ParentID: strconv.FormatInt(a.MessageID, 10), Operation: operation, ChangedFields: trigger.FieldChanges(before, after), OccurredAt: time.Now().UTC()})
-			if e := captureControl(ctx, tx, l.Scope.UserID, "dws", []model.ControlChange{{Operation: string(operation), Resource: "attachment", ConnectionID: l.Scope.ConnectionID, RecordID: strconv.FormatInt(a.MessageID, 10) + ":" + a.ID, Before: before, After: after, ChangedFields: trigger.FieldChanges(before, after), OccurredAt: time.Now().UTC()}}); e != nil {
+			if e := captureControl(ctx, tx, l.Scope.UserID, "dws", []model.ControlChange{{Operation: string(operation), Resource: "attachment", ConnectionID: l.Scope.ConnectionID, GroupID: groupID, RecordID: strconv.FormatInt(a.MessageID, 10) + ":" + a.ID, Before: before, After: after, ChangedFields: trigger.FieldChanges(before, after), OccurredAt: time.Now().UTC()}}); e != nil {
 				return e
 			}
 

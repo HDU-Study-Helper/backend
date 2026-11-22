@@ -19,12 +19,40 @@ func (s *Service) captureTerminalArtifacts(ctx context.Context, store model.Cont
 	}
 	var out struct {
 		WorkflowID string `json:"workflow_id"`
-		Results    []struct {
+		Verified   bool   `json:"verified"`
+		Receipt    *struct {
+			WorkflowID string            `json:"workflow_id"`
+			IDMap      map[string]string `json:"id_map"`
+			Verified   bool              `json:"verified"`
+		} `json:"commit_receipt"`
+		Results []struct {
 			WorkflowID string `json:"workflow_id"`
 		} `json:"results"`
 	}
 	if json.Unmarshal([]byte(run.Output), &out) != nil {
 		return
+	}
+	if item.Source == "first_run" {
+		if !out.Verified || out.Receipt == nil || !out.Receipt.Verified || out.Receipt.WorkflowID != out.WorkflowID {
+			return
+		}
+		var executions []f.ToolExecution
+		_ = json.Unmarshal(run.ToolExecutions, &executions)
+		for _, execution := range executions {
+			if execution.Error != nil || (execution.Name != "memory_create" && execution.Name != "memory_update") {
+				continue
+			}
+			for _, ref := range execution.ResultRefs {
+				id := out.Receipt.IDMap[ref.ID]
+				if ref.Kind != "MEMORY" || id == "" {
+					continue
+				}
+				m, err := s.Agents.Registry.Repository.GetMemory(ctx, f.Scope{OwnerID: item.OwnerID, AgentID: run.AgentID, WorkflowID: out.WorkflowID}, id)
+				if err == nil && m.WorkflowID == out.WorkflowID {
+					_ = store.SaveArtifact(ctx, model.ControlArtifact{ID: artifactID(item.ID, run.ID, "memory:"+id, 0), ItemID: item.ID, BatchID: item.BatchID, RoundID: item.RoundID, RunID: run.ID, Type: "MEMORY", Title: m.Title, Description: m.Content, EntityRef: id, Data: mustJSON(m)})
+				}
+			}
+		}
 	}
 	ids := []string{}
 	if out.WorkflowID != "" {

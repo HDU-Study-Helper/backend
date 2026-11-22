@@ -132,6 +132,9 @@ func (r *agents) SaveMemory(ctx context.Context, s f.Scope, m f.Memory, create b
 		if e := normalizeMemory(s, &m); e != nil {
 			return e
 		}
+		if e := validateMemorySourceRefsTx(ctx, tx, s.OwnerID, m.SourceRefs); e != nil {
+			return e
+		}
 		// Parent endpoints must be accessible before the SQL trigger verifies organization.
 		if m.ParentID != "" {
 			var id string

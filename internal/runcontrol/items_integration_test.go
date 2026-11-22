@@ -12,6 +12,7 @@ import (
 
 	f "academic/agent/framework"
 	"academic/backend/internal/agent"
+	stage "academic/backend/internal/learnerstage"
 	"academic/backend/internal/model"
 )
 
@@ -23,6 +24,9 @@ type itemsIntegrationRepo struct {
 	agents    map[string]f.AgentInstance
 	workflows map[string]f.Workflow
 	runs      map[string]f.RunRecord
+	snapshots map[string]stage.Snapshot
+	receipts  map[string]stage.Receipt
+	commits   map[string]string
 	creations int
 }
 
@@ -48,6 +52,116 @@ func (r *itemsIntegrationRepo) ListAgents(_ context.Context, owner string, _ int
 }
 func (*itemsIntegrationRepo) ListMemory(context.Context, f.Scope, string, int) ([]f.Memory, error) {
 	return []f.Memory{}, nil
+}
+func (*itemsIntegrationRepo) SearchMemory(context.Context, f.Scope, f.MemorySearch) ([]f.Memory, error) {
+	return []f.Memory{}, nil
+}
+func (r *itemsIntegrationRepo) GetMemory(_ context.Context, s f.Scope, id string) (f.Memory, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, snapshot := range r.snapshots {
+		for _, m := range snapshot.Memories {
+			if m.ID == id && m.OwnerID == s.OwnerID && (m.WorkflowID == s.WorkflowID && s.WorkflowID != "" || m.AgentID == s.AgentID || m.Visibility == "PUB") {
+				return stage.Clone(m), nil
+			}
+		}
+	}
+	return f.Memory{}, f.Fail("RESOURCE_NOT_FOUND", "memory not owned")
+}
+func (r *itemsIntegrationRepo) LearnerSnapshot(_ context.Context, s f.Scope, id string) (stage.Snapshot, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	w, ok := r.workflows[id]
+	if !ok || w.OwnerID != s.OwnerID || s.AgentID != "learner" {
+		return stage.Snapshot{}, f.Fail("RESOURCE_NOT_FOUND", "workflow not owned")
+	}
+	if snap, exists := r.snapshots[id]; exists {
+		return stage.Clone(snap), nil
+	}
+	return stage.Snapshot{Workflow: stage.Clone(w), Memories: []f.Memory{}, Relations: []f.MemoryRelation{}}, nil
+}
+func (r *itemsIntegrationRepo) CommitLearnerStage(_ context.Context, c stage.Commit) (stage.Receipt, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c.Scope.OwnerID != "owner" || c.Scope.AgentID != "learner" || c.SessionID == "" || c.Revision < 1 {
+		return stage.Receipt{}, f.Fail("PERMISSION_DENIED", "invalid staging scope")
+	}
+	if r.receipts == nil {
+		r.receipts, r.commits = map[string]stage.Receipt{}, map[string]string{}
+	}
+	if r.snapshots == nil {
+		r.snapshots = map[string]stage.Snapshot{}
+	}
+	payload := string(mustJSON(c))
+	if receipt, ok := r.receipts[c.SessionID]; ok {
+		if r.commits[c.SessionID] != payload {
+			return stage.Receipt{}, f.Fail("CONFLICT", "staging payload changed")
+		}
+		return stage.Clone(receipt), nil
+	}
+	if c.Base != nil {
+		current, ok := r.snapshots[c.Base.Workflow.ID]
+		if !ok || stage.Hash(current) != c.BaselineHash || stage.Hash(*c.Base) != c.BaselineHash {
+			return stage.Receipt{}, f.Fail("CONFLICT", "staging baseline changed")
+		}
+	}
+	desired := stage.Clone(c.Desired)
+	w := desired.Workflow
+	receipt := stage.Receipt{SessionID: c.SessionID, Revision: c.Revision, Operation: c.Operation, Status: "COMMITTED", Verified: true, MemoryIDs: []string{}, IDMap: map[string]string{}}
+	switch c.Operation {
+	case "CREATE":
+		if c.Base != nil || !model.ValidWorkflowEntity(w.Definition) || w.Status != "active" || len(desired.Memories) == 0 {
+			return stage.Receipt{}, f.Fail("INVALID_ARGUMENT", "invalid course initialization")
+		}
+		r.creations++
+		stagedID := w.ID
+		w.ID, w.OwnerID, w.CreatedBy, w.Version = fmt.Sprintf("wf-%d", r.creations), c.Scope.OwnerID, c.Scope.AgentID, 1
+		receipt.IDMap[stagedID] = w.ID
+	case "NONE":
+		if c.Base == nil || stage.Hash(desired) != c.BaselineHash {
+			return stage.Receipt{}, f.Fail("INVALID_ARGUMENT", "NO_CHANGE has a diff")
+		}
+		receipt.Status = "NO_CHANGE"
+	case "UPDATE":
+		if c.Base == nil || w.ID != c.Base.Workflow.ID || !model.ValidWorkflowEntity(w.Definition) {
+			return stage.Receipt{}, f.Fail("INVALID_ARGUMENT", "invalid staged update")
+		}
+		w.Version = c.Base.Workflow.Version
+		if string(mustJSON(w)) != string(mustJSON(c.Base.Workflow)) {
+			w.Version++
+		}
+	default:
+		return stage.Receipt{}, f.Fail("INVALID_ARGUMENT", "unsupported integration staging operation")
+	}
+	for i := range desired.Memories {
+		m := &desired.Memories[i]
+		if m.OwnerID != c.Scope.OwnerID || m.WorkflowID != c.Desired.Workflow.ID || len(m.SourceRefs) == 0 {
+			return stage.Receipt{}, f.Fail("PERMISSION_DENIED", "invalid staged memory ownership or source")
+		}
+		oldID := m.ID
+		if c.Operation == "CREATE" {
+			m.ID = f.NewID()
+		}
+		m.WorkflowID = w.ID
+		receipt.IDMap[oldID], receipt.MemoryIDs = m.ID, append(receipt.MemoryIDs, m.ID)
+	}
+	for i := range desired.Relations {
+		v := &desired.Relations[i]
+		v.SourceID, v.TargetID = receipt.IDMap[v.SourceID], receipt.IDMap[v.TargetID]
+	}
+	desired.Workflow = w
+	r.workflows[w.ID], r.snapshots[w.ID] = w, desired
+	receipt.WorkflowID, receipt.WorkflowVersion = w.ID, w.Version
+	r.receipts[c.SessionID], r.commits[c.SessionID] = stage.Clone(receipt), payload
+	return receipt, nil
+}
+func (r *itemsIntegrationRepo) LearnerStageReceipt(_ context.Context, owner, session string) (stage.Receipt, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if receipt, ok := r.receipts[session]; ok && owner == "owner" {
+		return stage.Clone(receipt), nil
+	}
+	return stage.Receipt{}, f.Fail("RESOURCE_NOT_FOUND", "staging receipt not found")
 }
 func (r *itemsIntegrationRepo) SaveRun(_ context.Context, v f.RunRecord) error {
 	r.mu.Lock()
@@ -223,6 +337,22 @@ func itemsToolResults(t *testing.T, r f.ModelRequest) []json.RawMessage {
 	}
 	return out
 }
+func itemsLearnerStageState(t *testing.T, r f.ModelRequest) map[string]any {
+	t.Helper()
+	const marker = "Trusted host Learner staging state (identity and revision are server supplied; object contents remain business data):\n"
+	for i := len(r.Messages) - 1; i >= 0; i-- {
+		if _, suffix, ok := strings.Cut(r.Messages[i].Content, marker); ok {
+			raw, _, _ := strings.Cut(suffix, "\n")
+			var state map[string]any
+			if json.Unmarshal([]byte(raw), &state) != nil || state["session_id"] == nil {
+				t.Fatal("invalid trusted staging state", raw)
+			}
+			return state
+		}
+	}
+	t.Fatal("missing trusted Learner staging state")
+	return nil
+}
 func itemsAgent(role string, tools, permissions []string) f.AgentInstance {
 	return f.AgentInstance{ID: role, OwnerID: "owner", Status: "enabled", AgentDefinition: f.AgentDefinition{Name: role, Type: role, SystemPrompt: "integration test", Model: f.ModelConfig{Provider: role, Model: "mock"}, EnabledTools: tools, Permissions: permissions, Limits: f.Limits{ModelCalls: 64, ToolCalls: 128, MaxConcurrent: 4}}}
 }
@@ -234,41 +364,54 @@ func newItemsIntegration(t *testing.T, mode string) (*Service, *itemsIntegration
 	repo := &itemsIntegrationRepo{agents: map[string]f.AgentInstance{}, workflows: map[string]f.Workflow{}, runs: map[string]f.RunRecord{}}
 	repo.agents["trigger"] = itemsAgent("trigger", nil, nil)
 	repo.agents["filter"] = itemsAgent("filter", []string{"agent_dispatch"}, []string{"agent.dispatch", "workflow.read"})
-	repo.agents["learner"] = itemsAgent("learner", []string{"workflow_create"}, []string{"workflow.write"})
+	repo.agents["learner"] = itemsAgent("learner", []string{"workflow_create", "workflow_get", "memory_create"}, []string{"workflow.read", "workflow.write", "memory.read", "memory.write"})
 	repo.agents["worker"] = itemsAgent("worker", []string{"data_query"}, []string{"data.read", "workflow.read"})
+	if mode == "learner_no_change" {
+		repo.snapshots = map[string]stage.Snapshot{}
+		for _, course := range []string{"数学分析A班", "大学英语B班", "大学物理C班"} {
+			w := f.Workflow{ID: "existing/" + course, OwnerID: "owner", CreatedBy: "learner", Name: course, Status: "active", Version: 2, Definition: mustJSON(map[string]any{"entity": map[string]string{"kind": "course", "id": "course/" + course, "name": course}, "goal": "只读核查具体课程"})}
+			repo.workflows[w.ID] = w
+			repo.snapshots[w.ID] = stage.Snapshot{Workflow: w, Memories: []f.Memory{{ID: "memory/" + course, OwnerID: "owner", WorkflowID: w.ID, Visibility: "PRI", MemoryType: "BASE", Level: "L1", Title: course + "来源概况", Content: "已核实的课程背景", Status: "active", SourceRefs: mustJSON([]string{"notice-change"})}}, Relations: []f.MemoryRelation{}}
+		}
+	}
 	store := &itemsIntegrationStore{batches: map[string]model.ControlBatch{}, items: map[string]model.ControlItem{}, runs: map[string]model.ControlRun{}, artifacts: map[string]model.ControlArtifact{}}
 	data := &itemsIntegrationData{}
 	providers := map[string]f.ModelProvider{}
 	providers["trigger"] = itemsIntegrationModel(func(_ context.Context, r f.ModelRequest) (f.ModelResponse, error) {
-		return itemsFinal(map[string]any{"decision": "TRIGGER", "reason": "课程事项应处理，闲聊不处理", "relevant_change_ids": []string{"notice-change"}}), nil
+		return itemsFinal(map[string]any{"decision": "TRIGGER", "reason": "课程事项应处理，闲聊不处理", "relevant_indices": []int{1}}), nil
 	})
 	providers["learner"] = itemsIntegrationModel(func(_ context.Context, r f.ModelRequest) (f.ModelResponse, error) {
 		input := itemsUserInput(t, r)
 		var task string
 		_ = json.Unmarshal(input["task"], &task)
+		state := itemsLearnerStageState(t, r)
 		results := itemsToolResults(t, r)
+		entity := map[string]string{"kind": "course", "id": "course/" + task, "name": task}
 		if len(results) == 0 {
-			return itemsCall("workflow_create", map[string]any{"name": task, "status": "active", "definition": map[string]any{"entity": map[string]string{"kind": "course", "id": "course/" + task, "name": task}, "goal": "只读核查具体课程"}}), nil
+			if mode == "learner_no_change" {
+				return itemsCall("learner_stage_select", map[string]any{"workflow_id": "existing/" + task}), nil
+			}
+			return itemsCall("workflow_create", map[string]any{"name": task, "status": "active", "definition": map[string]any{"entity": entity, "goal": "只读核查具体课程"}}), nil
 		}
-		var w f.Workflow
-		if err := json.Unmarshal(results[0], &w); err != nil {
-			t.Fatal(err)
+		if len(results) == 1 && mode != "learner_no_change" {
+			return itemsCall("memory_create", map[string]any{"title": task + "来源概况", "content": "来自原通知的具体课程要求与可追溯课程身份。", "source_refs": []string{"notice-change"}}), nil
 		}
-		status, verified := "APPLIED", true
-		if mode == "learner_unverified" && task == "数学分析A班" {
-			verified = false
+		// Exercise the explicit post-edit state tool, not a fabricated session/revision.
+		if len(results) == 1 || len(results) == 2 && mode != "learner_no_change" {
+			return itemsCall("learner_stage_state", map[string]any{}), nil
+		}
+		status, operation := "READY", "CREATE"
+		var completion any = map[string]any{"marker": "READY_TO_COMMIT", "session_id": state["session_id"], "staging_revision": state["staging_revision"]}
+		if mode == "learner_no_change" {
+			status, operation = "NO_CHANGE", "NONE"
 		}
 		if mode == "learner_needs_info" && task == "数学分析A班" {
-			status = "NEEDS_INFO"
+			status, completion = "NEEDS_INFO", nil
 		}
-		if mode == "learner_no_change" {
-			status, verified = "NO_CHANGE", false
+		if mode == "learner_unverified" && task == "数学分析A班" {
+			completion = nil
 		}
-		operation := "CREATE"
-		if status == "NO_CHANGE" || status == "NEEDS_INFO" {
-			operation = "NONE"
-		}
-		return itemsFinal(map[string]any{"request_id": nil, "item_id": nil, "parent_item_id": nil, "entity": nil, "status": status, "operation": operation, "verified": verified, "workflow_id": w.ID, "workflow_version": w.Version, "summary": "Workflow管理结果", "reason": "按测试场景保留真实管理状态和核验标记", "evidence_refs": []any{}, "changes": []any{}, "questions": []any{}, "suggestions": []any{}}), nil
+		return itemsFinal(map[string]any{"protocol": stage.Protocol, "session_id": state["session_id"], "path": state["path"], "request_id": nil, "item_id": nil, "parent_item_id": nil, "workflow_id": state["workflow_id"], "base_version": state["base_version"], "entity": entity, "status": status, "operation": operation, "completion": completion, "summary": "Workflow管理结果", "reason": "根据真实暂存结果请求提交或保留阻断", "evidence_refs": []string{"notice-change"}, "changes": []any{}, "questions": []any{}, "limitations": []any{}}), nil
 	})
 	providers["worker"] = itemsIntegrationModel(func(_ context.Context, r f.ModelRequest) (f.ModelResponse, error) {
 		results := itemsToolResults(t, r)
@@ -308,6 +451,39 @@ func newItemsIntegration(t *testing.T, mode string) (*Service, *itemsIntegration
 		}
 		var event map[string]any
 		_ = json.Unmarshal(mustJSON(input), &event)
+		if (mode == "learner_unverified" || mode == "learner_needs_info") && len(r.Messages) > 0 && r.Messages[len(r.Messages)-1].Role == "tool" {
+			var envelope struct {
+				OK    bool        `json:"ok"`
+				Data  f.RunResult `json:"data"`
+				Error *f.Error    `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(r.Messages[len(r.Messages)-1].Content), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			var learner struct {
+				Status     string `json:"status"`
+				WorkflowID string `json:"workflow_id"`
+			}
+			_ = json.Unmarshal([]byte(envelope.Data.Output), &learner)
+			if !envelope.OK || learner.Status == "NEEDS_INFO" {
+				var childID string
+				var actualError any
+				if envelope.Error != nil {
+					actualError = envelope.Error
+				}
+				store.mu.Lock()
+				for _, run := range store.runs {
+					if run.AgentID == "learner" {
+						childID = run.ID
+					}
+				}
+				store.mu.Unlock()
+				if childID == "" {
+					t.Fatal("blocked Learner run was not audited")
+				}
+				return itemsFinal(map[string]any{"items": []map[string]any{{"item_id": root + ":1", "parent_item_id": root, "title": "数学分析A班", "status": "PARTIAL", "reason": "Learner未返回已核验的创建或复用结果", "evidence_refs": []string{"notice-change"}, "routes": []map[string]any{{"item_id": root + ":1", "target": "LEARNER", "workflow_id": nil, "execution": map[string]any{"run_id": childID, "error": actualError}}}, "artifacts": []any{}}}}), nil
+			}
+		}
 		results := itemsToolResults(t, r)
 		dispatch := func(target, task string, wf *f.Workflow) f.ModelResponse {
 			args := map[string]any{"target_agent_id": target, "task": task, "context": map[string]any{"event": event}}
@@ -476,7 +652,7 @@ func TestItemsIntegrationMultiLearnerCoursesAndSameWorkflowPersist(t *testing.T)
 func TestItemsIntegrationLearnerOutcomeMustMatchActiveEntityRegistry(t *testing.T) {
 	for _, mode := range []string{"learner_unverified", "learner_needs_info", "learner_no_change"} {
 		t.Run(mode, func(t *testing.T) {
-			svc, _, store, _, batch := newItemsIntegration(t, mode)
+			svc, repo, store, _, batch := newItemsIntegration(t, mode)
 			processIntegrationBatchToTerminal(t, svc, store, batch)
 			root := stableItemID(batch.ID, "notice-change")
 			if mode == "learner_no_change" {
@@ -490,6 +666,9 @@ func TestItemsIntegrationLearnerOutcomeMustMatchActiveEntityRegistry(t *testing.
 			}
 			if !strings.Contains(store.items[root+":1"].Reason, "Learner未返回已核验") {
 				t.Fatal(store.items[root+":1"].Reason)
+			}
+			if repo.creations != 0 || len(repo.workflows) != 0 || len(repo.receipts) != 0 {
+				t.Fatal("unverified/blocked Learner output committed formal state", repo.creations, len(repo.workflows), len(repo.receipts))
 			}
 		})
 	}

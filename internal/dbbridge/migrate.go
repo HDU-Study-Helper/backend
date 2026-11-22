@@ -20,13 +20,13 @@ func (d *DB) Migrate(ctx context.Context) error {
 		if e := tx.QueryRow(ctx, `SELECT COALESCE(max(version),0) FROM dbbridge_migrations`).Scan(&version); e != nil {
 			return storageError(e)
 		}
-		if version > 15 {
+		if version > 18 {
 			return model.ErrConflict
 		}
 		for _, migration := range []struct {
 			version int
 			sql     string
-		}{{1, schemaV1}, {2, schemaV2}, {3, schemaV3}, {4, schemaV4}, {5, schemaV5}, {6, schemaV6}, {7, schemaV7}, {8, schemaV8}, {9, schemaV9}, {10, schemaV10}, {11, schemaV11}, {12, schemaV12}, {13, schemaV13}, {14, schemaV14}, {15, schemaV15}} {
+		}{{1, schemaV1}, {2, schemaV2}, {3, schemaV3}, {4, schemaV4}, {5, schemaV5}, {6, schemaV6}, {7, schemaV7}, {8, schemaV8}, {9, schemaV9}, {10, schemaV10}, {11, schemaV11}, {12, schemaV12}, {13, schemaV13}, {14, schemaV14}, {15, schemaV15}, {16, schemaV16}, {17, schemaV17}, {18, actionSchemaSQL + continuationSchemaSQL + chatSchemaSQL}} {
 			if migration.version <= version {
 				continue
 			}

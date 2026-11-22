@@ -7,12 +7,14 @@
 | schedule_query | schedule.read | academic_year/term/teaching_week，或 RFC3339 from/to；可结合过滤。时间范围最长366天；limit默认100、最大1000；offset最大100000 |
 | schedule_get | schedule.read | id；读取详情、有效状态及修改历史，可能返回已失效记录 |
 | schedule_create | schedule.write | academic_year/term/teaching_week/start_time/end_time/title，details可选；来源AGENT |
-| schedule_update | schedule.write | id/mode，及可选start_time/end_time/title/details/event_status |
+| schedule_update | schedule.write | id/mode，至少提供start_time/end_time/title/details/event_status中的一个；省略字段保留，details空串清除，null不接受 |
 | schedule_delete | schedule.delete | id；课表保留删除标记和历史，手动/Agent日程永久删除 |
 
-Schema 拒绝额外字段；OwnerID只能取可信Runtime上下文。每次执行检查工具与权限，沿原Bridge进入日程Repository，再做当前用户隔离。查询结果再检查用户归属/active/数量；时间区间为重叠匹配[from,to)，按start_time,id排序。返回 `items/offset/next_offset`，遍历至空页；offset达到上限时缩小时间范围。空结果正常返回数组，失败不会伪装成空结果。
+Schema 拒绝额外字段；OwnerID只能取可信Runtime上下文。每次执行检查工具与权限，沿原Bridge进入日程Repository，再做当前用户隔离。查询结果再检查用户归属/active/数量；时间区间为重叠匹配[from,to)，按start_time,id排序。返回 `items/offset/next_offset`，遍历至空页；若下个偏移超过100000，额外返回 `page_limit_reason=offset_limit`，保持原next_offset数字但不得继续使用，应缩小时间范围。空结果正常返回数组，失败不会伪装成空结果。
 
-完整输入/输出JSON Schema通过后台工具目录 `/api/v1/agents/tools` 提供。这5个工具属于后端宿主扩展，不包含在纯框架Builtin目录导出中；生产后台共25个工具。Filter只授权query/get。创建实例不自动授权其他Agent。
+完整输入/输出JSON Schema通过后台工具目录 `/api/v1/agents/tools` 提供。这5个工具属于后端宿主扩展，不包含在纯框架Builtin目录导出中；普通后端注册表最多26个工具（21个通用工具加5个日程工具）；具体Agent仍经EnabledTools和Permissions筛选。Learner暂存另有两个会话工具，临时注册表只接线schedule_query/get和既有Search读取依赖，写日程工具不注册，并用只读Bridge再次拒绝写操作。Filter只授权query/get。创建实例不自动授权其他Agent。
+
+五个日程工具所有参数具有字段级说明；limit/offset/details的默认注解仅描述创建或查询行为，更新不自动填默认值。title最大1000 UTF-8字节、details最大16384字节，输入Schema保留字符上限作为宽松预检，handler在调用Port前执行精确字节检查，原domain校验不变。输出完整声明Schedule、mod、patch和history；历史mode包含TEMPORARY/PERMANENT/SYNC/DELETE/SYNC_REMOVED。
 
 写入复用原日程契约：时间精确到分钟，单次时长不超过7天；学期和教学周由调用方明确提供，不自动推断。TEMPORARY只改选定周；课表PERMANENT可影响同系列当前及后续周，完成状态仅作用于选定项。没有expected_version或新增幂等键，不要盲重试写入。没有新增通知发送或自然语言日期解析。
 

@@ -4,18 +4,30 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"sync"
 
 	f "academic/agent/framework"
 	"academic/backend/internal/bridge"
+	"academic/backend/internal/chatwire"
+	"academic/backend/internal/continuation"
 )
 
 const RunOperation = "agent.run"
 
 // Service exposes internal Go and bridge.Port entry points only; it registers no HTTP routes.
 type Service struct {
-	Runtime  *f.Runtime
-	Registry f.Registry
-	Tools    *f.ToolRegistry
+	// ContinuationFinished is an optional host bookkeeping hook. It runs once
+	// after restoring the handled chain, before the answer receipt is finalized.
+	ContinuationFinished func(context.Context, continuation.ControlLink, []string, f.RunResult) error
+	Runtime              *f.Runtime
+	Registry             f.Registry
+	Tools                *f.ToolRegistry
+	backend              bridge.Port
+	search               f.SearchProvider
+	schedules            bridge.Port
+	stageMu              sync.Mutex
+	stageActive          map[string]int
+	stageTotal           int
 }
 type Dependencies struct {
 	Repository f.Repository
@@ -30,7 +42,7 @@ func New(d Dependencies) (*Service, error) {
 		return nil, f.Fail("INVALID_ARGUMENT", "agent repository required")
 	}
 	tools := f.NewToolRegistry()
-	s := &Service{Tools: tools, Registry: f.Registry{Repository: d.Repository}}
+	s := &Service{Tools: tools, Registry: f.Registry{Repository: d.Repository}, backend: d.Backend, search: d.Search, schedules: d.Schedules}
 	dispatch := DispatchBridge{Port: s}
 	backend := BackendBridge{Port: d.Backend}
 	if err := (f.Builtins{Repository: d.Repository, Search: d.Search, Dispatcher: dispatch, Notifications: backend, Data: backend}).Register(tools); err != nil {
@@ -45,7 +57,43 @@ func New(d Dependencies) (*Service, error) {
 	return s, nil
 }
 func (s *Service) Run(ctx context.Context, owner string, req f.RunRequest) (f.RunResult, error) {
+	ctx, err := f.WithExecutionTimeZone(ctx, owner, "Asia/Shanghai")
+	if err != nil {
+		return f.RunResult{}, err
+	}
+	a, err := s.Registry.Repository.GetAgent(ctx, f.Scope{OwnerID: owner, AgentID: req.AgentID})
+	if err != nil {
+		return f.RunResult{}, err
+	}
+	return s.runWithContinuation(ctx, owner, req, a)
+}
+
+func (s *Service) runRole(ctx context.Context, owner string, req f.RunRequest, a f.AgentInstance) (f.RunResult, error) {
+	if a.Type == "learner" {
+		return s.runLearner(ctx, owner, req, a)
+	}
+	switch a.Type {
+	case "chat":
+		ctx = f.WithOutputValidation(ctx, f.OutputValidation{OwnerID: owner, AgentID: a.ID, MaxCorrections: 2, Validate: chatwire.ValidateOutput})
+	case "worker":
+		ctx = f.WithOutputValidation(ctx, f.OutputValidation{OwnerID: owner, AgentID: a.ID, MaxCorrections: 2, Validate: validateWorkerFinal})
+	case "trigger", "filter":
+		ctx = f.WithOutputValidation(ctx, f.OutputValidation{OwnerID: owner, AgentID: a.ID, MaxCorrections: 2, Validate: validateJSONObjectFinal})
+	}
 	return s.Runtime.Run(ctx, owner, req)
+}
+
+// Role contracts are installed by this application host, never by the generic
+// Runtime. This minimum policy checks syntax only; it cannot approve business work.
+func validateJSONObjectFinal(ctx context.Context, input f.OutputValidationInput) (*f.OutputValidationFailure, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var value map[string]json.RawMessage
+	if !json.Valid([]byte(input.Output)) || json.Unmarshal([]byte(input.Output), &value) != nil || value == nil {
+		return &f.OutputValidationFailure{Kind: f.OutputFormat, Code: "INVALID_AGENT_RESULT", Feedback: "Return exactly one valid JSON object matching your existing output contract. Correct syntax only; do not change facts, create new actions or repeat tools."}, nil
+	}
+	return nil, nil
 }
 func (s *Service) Call(ctx context.Context, req bridge.Request) (bridge.Reply, error) {
 	if req.Version != bridge.Version || req.OwnerID == "" || len(req.Payload) > 1<<20 || !json.Valid(req.Payload) {
@@ -83,13 +131,44 @@ func (b DispatchBridge) Dispatch(ctx context.Context, e f.ExecutionContext, req 
 		if target.Type == "worker" && e.Scope.WorkflowID == "" {
 			return f.RunResult{}, f.Fail("INVALID_ARGUMENT", "Worker业务调用必须在agent_dispatch顶层提供workflow:{workflow_id,version}；context中的Workflow文本不能绑定执行范围，请使用已核实的ID与整数版本重新派发")
 		}
+		caller, lookupErr := service.Registry.Repository.GetAgent(ctx, f.Scope{OwnerID: e.Scope.OwnerID, AgentID: e.Scope.AgentID})
+		if lookupErr != nil {
+			return f.RunResult{}, lookupErr
+		}
+		if target.Type == "worker" && caller.Type != "chat" && caller.Type != "filter" {
+			return f.RunResult{}, f.Fail("PERMISSION_DENIED", "only Filter or Chat can dispatch Worker")
+		}
+		if target.Type == "chat" || caller.Type == "chat" && target.Type != "worker" && target.Type != "learner" {
+			return f.RunResult{}, f.Fail("PERMISSION_DENIED", "Chat can dispatch only Worker or Learner and is never a dispatch target")
+		}
+		if caller.Type == "chat" {
+			src, ok := continuation.Current(ctx)
+			if !ok || !src.Valid(e.Scope.OwnerID) || src.Channel != continuation.ChB {
+				return f.RunResult{}, f.Fail("PERMISSION_DENIED", "Chat dispatch requires an authenticated conversation")
+			}
+		}
+
+		if target.Type == "learner" {
+			switch caller.Type {
+			case "filter", "chat":
+				if caller.Type == "chat" && e.Scope.WorkflowID != "" {
+					ctx = context.WithValue(ctx, learnerStageKey{}, learnerAuthority{Owner: e.Scope.OwnerID, Path: "REVISE", Target: e.Scope.WorkflowID, Role: "chat"})
+				}
+				if e.Scope.WorkflowID == "" {
+					ctx = context.WithValue(ctx, learnerStageKey{}, learnerAuthority{Owner: e.Scope.OwnerID, Path: "INITIALIZE", Role: caller.Type})
+				}
+			case "worker":
+				if e.Scope.WorkflowID == "" {
+					return f.RunResult{}, f.Fail("PERMISSION_DENIED", "Worker revision requires its bound Workflow")
+				}
+				ctx = context.WithValue(ctx, learnerStageKey{}, learnerAuthority{Owner: e.Scope.OwnerID, Path: "REVISE", Target: e.Scope.WorkflowID, Role: "worker"})
+			default:
+				return f.RunResult{}, f.Fail("PERMISSION_DENIED", "only Filter initialization and bound Worker revision may call Learner")
+			}
+		}
 		if target.Type == "learner" && e.Scope.WorkflowID != "" {
 			// The builtin binds the selected workflow before dispatch. Resolve the
 			// caller role from its trusted identity, never from model input.
-			caller, lookupErr := service.Registry.Repository.GetAgent(ctx, f.Scope{OwnerID: e.Scope.OwnerID, AgentID: e.Scope.AgentID})
-			if lookupErr != nil {
-				return f.RunResult{}, lookupErr
-			}
 			if caller.Type == "filter" {
 				hint := "课程业务执行应派发Worker，请核实target_agent_id并携带workflow:{workflow_id,version}；Learner创建、更新和管理请求不得绑定workflow，请移除顶层workflow，并通过context.target_workflow_id指定待管理的Workflow"
 				candidates, listErr := service.Registry.Repository.ListAgents(ctx, e.Scope.OwnerID, 100, "")

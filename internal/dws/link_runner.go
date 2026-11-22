@@ -16,15 +16,16 @@ import (
 // deviceParser recognizes only the exact Chinese presentation in the pinned
 // official device_flow.go:dfPrintDeviceAuthorization. Other stderr is discarded.
 type deviceParser struct {
-	buffer   []byte
-	count    int
-	code     string
-	lifetime time.Duration
-	label    bool
-	uri      string
-	emit     func(deviceChallenge) error
-	cancel   context.CancelFunc
-	failed   bool
+	buffer      []byte
+	count       int
+	code        string
+	lifetime    time.Duration
+	label       bool
+	uri         string
+	emit        func(deviceChallenge) error
+	cancel      context.CancelFunc
+	failed      bool
+	failureCode string // Whitelisted diagnostic only; never expose CLI output.
 }
 
 func (p *deviceParser) Write(b []byte) (int, error) {
@@ -75,7 +76,22 @@ func (p *deviceParser) line(line string) error {
 		}
 		return nil
 	}
+	// Only explicit failures from the pinned CLI are diagnoses. Reaching a step
+	// (e.g. checking organization policy) does not imply that policy denied it.
+	switch {
+	case strings.Contains(line, "您暂无 CLI 数据访问权限"), strings.Contains(line, "该组织尚未开启CLI数据访问权限"):
+		p.failureCode = "dws_org_denied"
+	case strings.Contains(line, "当前组织已开启渠道管控"), strings.Contains(line, "未获得该组织授权"):
+		p.failureCode = "dws_channel_denied"
+	case strings.Contains(line, "无法检查 CLI 数据访问权限状态"), strings.Contains(line, "检查 CLI 授权状态失败"):
+		p.failureCode = "dws_org_check_failed"
+	case strings.Contains(line, "换取 token 失败"):
+		p.failureCode = "dws_token_exchange_failed"
+	case strings.Contains(line, "保存 token 失败"), strings.Contains(line, "本地登录态无法安全更新"):
+		p.failureCode = "dws_cli_save_failed"
+	}
 	if strings.HasPrefix(line, "  授权码: ") {
+		p.failureCode = ""
 		p.code = strings.TrimPrefix(line, "  授权码: ")
 		p.uri = ""
 		p.lifetime = 0
@@ -130,6 +146,15 @@ func (r *deviceRunner) login(ctx context.Context, root string, emit func(deviceC
 	}
 	if err != nil || stderr.failed || exceeded.Load() || stderr.uri == "" {
 		clear(stdout.data.Bytes())
+		if stderr.failed || exceeded.Load() {
+			return nil, errors.New("dws_cli_output_invalid")
+		}
+		if stderr.failureCode != "" {
+			return nil, errors.New(stderr.failureCode)
+		}
+		if stderr.uri != "" {
+			return nil, errors.New("dws_cli_after_challenge")
+		}
 		return nil, fail
 	}
 	return stdout.data.Bytes(), nil

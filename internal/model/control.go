@@ -19,6 +19,7 @@ type ControlChange struct {
 	Resource      string          `json:"resource"`
 	Source        string          `json:"source"`
 	ConnectionID  string          `json:"connection_id,omitempty"`
+	GroupID       string          `json:"group_id,omitempty"`
 	RecordID      string          `json:"record_id"`
 	Before        json.RawMessage `json:"before,omitempty"`
 	After         json.RawMessage `json:"after,omitempty"`
@@ -29,8 +30,9 @@ type ControlChange struct {
 // ControlBatchScope records the frozen scheduling unit of a sealed batch.
 // CourseRef identifies the enrolled teaching class/term, never the shared source term.
 type ControlBatchScope struct {
-	Kind         string `json:"kind"` // course or unassociated
+	Kind         string `json:"kind"` // course, unassociated, group or unresolved_group
 	ConnectionID string `json:"connection_id"`
+	GroupID      string `json:"group_id,omitempty"`
 	OfferingID   string `json:"offering_id,omitempty"`
 	CourseRef    string `json:"course_ref,omitempty"`
 	CourseName   string `json:"course_name,omitempty"`
@@ -77,25 +79,27 @@ type ControlRun struct {
 	FinishedAt     *time.Time      `json:"finished_at,omitempty"`
 }
 type ControlItem struct {
-	ID           string          `json:"item_id"`
-	ParentID     string          `json:"parent_item_id,omitempty"`
-	BatchID      string          `json:"batch_id"`
-	RoundID      string          `json:"round_id"`
-	ChangeID     string          `json:"change_id"`
-	OwnerID      string          `json:"owner_user_id"`
-	Source       string          `json:"source"`
-	Resource     string          `json:"resource"`
-	Title        string          `json:"title"`
-	Status       string          `json:"status"`
-	Reason       string          `json:"reason"`
-	FilterRunID  string          `json:"filter_run_id,omitempty"`
-	ReportedID   string          `json:"reported_item_id,omitempty"`
-	IDNormalized bool            `json:"item_reference_normalized,omitempty"`
-	Routes       json.RawMessage `json:"routes"`
-	Evidence     json.RawMessage `json:"evidence_refs"`
-	Input        json.RawMessage `json:"input,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	ID               string          `json:"item_id"`
+	ParentID         string          `json:"parent_item_id,omitempty"`
+	BatchID          string          `json:"batch_id"`
+	RoundID          string          `json:"round_id"`
+	ChangeID         string          `json:"change_id"`
+	OwnerID          string          `json:"owner_user_id"`
+	Source           string          `json:"source"`
+	Resource         string          `json:"resource"`
+	Title            string          `json:"title"`
+	Status           string          `json:"status"`
+	Reason           string          `json:"reason"`
+	FilterRunID      string          `json:"filter_run_id,omitempty"`
+	ContinuationRuns []string        `json:"continuation_run_ids,omitempty"`
+	PendingQuestions []string        `json:"pending_question_ids,omitempty"`
+	ReportedID       string          `json:"reported_item_id,omitempty"`
+	IDNormalized     bool            `json:"item_reference_normalized,omitempty"`
+	Routes           json.RawMessage `json:"routes"`
+	Evidence         json.RawMessage `json:"evidence_refs"`
+	Input            json.RawMessage `json:"input,omitempty"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
 }
 type ControlArtifact struct {
 	ID          string          `json:"artifact_id"`

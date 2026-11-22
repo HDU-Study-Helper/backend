@@ -14,6 +14,7 @@ import (
 
 	f "academic/agent/framework"
 	"academic/backend/internal/agent"
+	"academic/backend/internal/continuation"
 	"academic/backend/internal/model"
 )
 
@@ -23,6 +24,7 @@ type Service struct {
 	Store    model.ControlRepository
 	Agents   *agent.Service
 	Data     f.DataService
+	Actions  model.ActionRepository
 	instance string
 	mu       sync.Mutex
 	active   map[string]context.CancelFunc
@@ -34,6 +36,7 @@ func New(store model.ControlRepository, agents *agent.Service, data ...f.DataSer
 		s.Data = data[0]
 	}
 	agents.Runtime.Observer = s.observe
+	agents.ContinuationFinished = s.finishContinuation
 	return s
 }
 func (s *Service) observe(ctx context.Context, r f.RunRecord, state, output string) {
@@ -41,6 +44,9 @@ func (s *Service) observe(ctx context.Context, r f.RunRecord, state, output stri
 	defer cancel()
 	batch, _ := ctx.Value(batchKey{}).(string)
 	item, _ := ctx.Value(itemKey{}).(string)
+	if l, ok := continuation.Control(ctx, r.OwnerID); ok {
+		batch, item = l.Batch, l.Item
+	}
 	v := model.ControlRun{LeaseOwner: s.instance, ID: r.ID, BatchID: batch, ItemID: item, OwnerID: r.OwnerID, AgentID: r.AgentID, WorkflowID: r.WorkflowID, ParentID: r.ParentRunID, State: state, Output: output, StartedAt: r.StartedAt, UpdatedAt: time.Now().UTC(), FinishedAt: r.FinishedAt, ModelCalls: r.ModelCalls, ToolCalls: r.ToolCalls}
 	role := ""
 	if a, e := s.Agents.Registry.Repository.GetAgent(c, f.Scope{OwnerID: r.OwnerID, AgentID: r.AgentID}); e == nil {
@@ -202,6 +208,25 @@ func (s *Service) process(parent context.Context, b model.ControlBatch) {
 		}
 		finish(status, code)
 	}
+	if b.Source == "first_run" {
+		store, ok := s.Store.(model.FirstRunRepository)
+		if !ok {
+			fail(model.ErrConflict)
+			return
+		}
+		if e := s.processFirstCourses(ctx, b, store); e != nil {
+			fail(e)
+			return
+		}
+		packet, e := store.FirstInput(ctx, b.OwnerID, b.ID)
+		if e != nil {
+			fail(e)
+			return
+		}
+		b.Filter = mustJSON(map[string]any{"courses": len(packet.Targets), "missing_publication_time": packet.Missing})
+		finish("succeeded", "")
+		return
+	}
 	itemsStore, hasItems := s.Store.(model.ControlItemRepository)
 	if hasItems {
 		for _, change := range b.Changes {
@@ -331,6 +356,7 @@ func (s *Service) process(parent context.Context, b model.ControlBatch) {
 		fail(f.Fail("INVALID_FILTER_INPUT", "change evidence could not be encoded"))
 		return
 	}
+	ctx = s.bindContinuation(ctx, b, "")
 	result, e := s.Agents.Run(ctx, b.OwnerID, f.RunRequest{AgentID: a.ID, Trigger: f.DataChanged, Input: input})
 	if e != nil {
 		fail(e)
@@ -477,6 +503,9 @@ type filterEvidence struct {
 // DWS events historically store the native message ID in RecordID. Preserve
 // that namespace and resolve it within its connection and conversation.
 func dwsMessageGroup(change model.ControlChange) string {
+	if change.GroupID != "" {
+		return change.GroupID
+	}
 	for _, raw := range []json.RawMessage{change.After, change.Before} {
 		var identity struct {
 			Group string `json:"conversationId"`
@@ -545,7 +574,7 @@ func filterInput(b model.ControlBatch, selected []model.ControlChange) (json.Raw
 			input["evidence_query"] = map[string]string{"dataset": "dws_messages", "id_field": "external_id", "id_value_from": "evidence_links[].external_id", "connection_id_from": "evidence_links[].connection_id", "group_id_from": "evidence_links[].group_id", "operator": "eq"}
 		}
 	}
-	if courseBatch(b) {
+	if courseBatch(b) || dwsGroupBatch(b) {
 		input["batch_scope"] = b.Scope
 	}
 	if len(selected) > 0 {
@@ -554,6 +583,8 @@ func filterInput(b model.ControlBatch, selected []model.ControlChange) (json.Raw
 	return json.Marshal(input)
 }
 
+// triggerDecision is the host's persisted result. Model-facing indices are
+// translated in validateTriggerIndices before reaching this representation.
 type triggerDecision struct {
 	Decision string   `json:"decision"`
 	Reason   string   `json:"reason"`

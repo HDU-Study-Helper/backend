@@ -35,6 +35,8 @@ type PlatformRecord struct {
 	Hash       string          `json:"content_hash"`
 	Content    json.RawMessage `json:"content"`
 	ObservedAt time.Time       `json:"observed_at"`
+	// CourseDelivery is a derived presentation rule, never source-confirmed data.
+	CourseDelivery *CourseDelivery `json:"course_delivery,omitempty"`
 }
 
 // PlatformRepository is the central storage port; adapters never receive SQL access.

@@ -15,7 +15,7 @@ import (
 
 const assignmentHeaderMaxBody = 4 << 20
 
-var assignmentHeaderLabel = regexp.MustCompile(`(?:作答时间|答题时间|题量|满分)\s*[:：]\s*`)
+var assignmentHeaderLabel = regexp.MustCompile(`(?:作答时间|答题时间|开始时间|题量|满分)\s*[:：]\s*`)
 var assignmentHeaderDate = regexp.MustCompile(`^(?:([0-9]{4})[-/.年])?([0-9]{1,2})[-/.月]([0-9]{1,2})日?(?:[ T]+([0-9]{1,2}):([0-9]{2})(?::([0-9]{2}))?)?$`)
 var assignmentHeaderRange = regexp.MustCompile(`^((?:[0-9]{4}[-/.年])?[0-9]{1,2}[-/.月][0-9]{1,2}日?(?:[ T]+[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)?)\s*(?:至|~|～)\s*((?:[0-9]{4}[-/.年])?[0-9]{1,2}[-/.月][0-9]{1,2}日?(?:[ T]+[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)?)$`)
 var assignmentHeaderCount = regexp.MustCompile(`^[0-9]{1,5}$`)
@@ -74,16 +74,19 @@ func assignmentHeaderMetadata(body []byte) (map[string]any, error) {
 							label := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(line[loc[0]:loc[1]]), ":："))
 							value := strings.TrimSpace(line[loc[1]:end])
 							switch label {
-							case "作答时间", "答题时间":
-								m := assignmentHeaderRange.FindStringSubmatch(value)
-								if len(m) != 3 || !assignmentHeaderValidDate(m[1]) || !assignmentHeaderValidDate(m[2]) {
+							case "作答时间", "答题时间", "开始时间":
+								start, end := value, ""
+								if m := assignmentHeaderRange.FindStringSubmatch(value); m != nil && label != "开始时间" {
+									start, end = m[1], m[2]
+								}
+								if !assignmentHeaderValidDate(start) || (end != "" && !assignmentHeaderValidDate(end)) {
 									return contract.ErrParse
 								}
-								if answerRaw != "" && (startRaw != m[1] || endRaw != m[2]) {
+								if (startRaw != "" && startRaw != start) || (endRaw != "" && end != "" && endRaw != end) {
 									return contract.ErrParse
 								}
-								if answerRaw == "" {
-									answerRaw, startRaw, endRaw, answerSource = value, m[1], m[2], "assignment_header:"+label
+								if answerRaw == "" || (endRaw == "" && end != "") {
+									answerRaw, startRaw, endRaw, answerSource = value, start, end, "assignment_header:"+label
 								}
 							case "题量":
 								if !assignmentHeaderCount.MatchString(value) {

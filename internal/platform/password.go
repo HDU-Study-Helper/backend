@@ -46,11 +46,18 @@ func (s *Service) LoginPassword(ctx context.Context, owner, source, username, pa
 }
 
 func (s *Service) SyncTerm(ctx context.Context, scope model.DWSScope, r contract.Resource, year, term int) error {
+	_, err := s.SyncTermPage(ctx, scope, r, year, term)
+	return err
+}
+
+// SyncTermPage saves one explicitly requested academic-term page and reports
+// committed continuation, never a promise of complete all-term coverage.
+func (s *Service) SyncTermPage(ctx context.Context, scope model.DWSScope, r contract.Resource, year, term int) (SyncPageReceipt, error) {
 	if year < 2000 || year > 2100 || (term != 1 && term != 2) || (r != contract.Course && r != contract.Schedule) {
-		return contract.ErrInvalid
+		return SyncPageReceipt{}, contract.ErrInvalid
 	}
 	if r == contract.Schedule {
-		return contract.ErrInvalid
+		return SyncPageReceipt{}, contract.ErrInvalid
 	} // concrete schedules require a calendar
-	return s.syncPageTerm(ctx, scope, r, "", "", year, term)
+	return s.syncPageDetails(ctx, scope, r, "", "", year, term)
 }

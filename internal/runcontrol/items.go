@@ -204,6 +204,18 @@ func (s *Service) processItems(ctx context.Context, b model.ControlBatch, change
 				continue
 			}
 		}
+		// A previous process may have died after the child question committed
+		// but before it could write the waiting item. Never redispatch it.
+		if waiting, err := s.pendingItem(ctx, &item); err != nil {
+			return nil, true, err
+		} else if waiting {
+			if err = store.SaveItem(ctx, item); err != nil {
+				return nil, true, err
+			}
+			partial = true
+			summary = append(summary, item)
+			continue
+		}
 		item.Status = "RUNNING"
 		if e = store.SaveItem(ctx, item); e != nil {
 			return nil, true, e
@@ -220,9 +232,22 @@ func (s *Service) processItems(ctx context.Context, b model.ControlBatch, change
 		var payload map[string]any
 		_ = json.Unmarshal(input, &payload)
 		itemContext := s.enrichItemContext(context.WithValue(ctx, itemKey{}, item.ID), b, change)
+		itemContext = s.bindContinuation(itemContext, b, item.ID)
 		itemContext = f.WithDispatchEvent(itemContext, b.OwnerID, mustJSON(payload))
 		result, runErr := s.Agents.Run(itemContext, b.OwnerID, f.RunRequest{AgentID: filter.ID, Trigger: f.DataChanged, Input: mustJSON(payload)})
 		item.FilterRunID = result.RunID
+		// A child may have durably suspended before its parent returned an error.
+		// Prefer that verified question to a failed or repeatable item status.
+		if waiting, err := s.pendingItem(ctx, &item); err != nil {
+			return nil, true, err
+		} else if waiting {
+			if err = store.SaveItem(ctx, item); err != nil {
+				return nil, true, err
+			}
+			partial = true
+			summary = append(summary, item)
+			continue
+		}
 		if runErr != nil {
 			item.Status = "FAILED"
 			item.Reason = f.SafeError(runErr).Code + ": " + f.SafeError(runErr).Message
@@ -490,6 +515,11 @@ func (s *Service) captureRunArtifacts(ctx context.Context, store model.ControlIt
 			EntityRef string `json:"entity_ref"`
 		}
 		_ = json.Unmarshal(v, &artifact)
+		// Persistent action cards are reconstructed from validated tool receipts.
+		// Never duplicate them or turn a model-provided ID into proof of a write.
+		if s.Actions != nil && (artifact.Type == "TASK" || artifact.Type == "NOTICE" || artifact.Type == "PLANNED_JOB") && artifact.EntityRef != "" {
+			continue
+		}
 		if artifact.Type == "MEMORY" {
 			if artifact.EntityRef == "" {
 				continue

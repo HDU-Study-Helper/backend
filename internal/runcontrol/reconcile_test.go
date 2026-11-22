@@ -95,7 +95,9 @@ func TestReconcileSavedNestedLearnerResultWithoutReplay(t *testing.T) {
 			if err := json.Unmarshal(store.items[item.ID].Routes, &routes); err != nil {
 				t.Fatal(err)
 			}
-			if len(routes) != 2 || !routes[0].Execution.ServerVerified || routes[0].Execution.ModelVerified == nil || *routes[0].Execution.ModelVerified != (mode == "") {
+			// Staging output is now normalized by the host after commit or verified
+			// NO_CHANGE; the saved verified flag is the host receipt, not model truth.
+			if len(routes) != 2 || !routes[0].Execution.ServerVerified || routes[0].Execution.ModelVerified == nil || !*routes[0].Execution.ModelVerified {
 				t.Fatalf("verification flags not retained: %+v", routes)
 			}
 			if len(repo.runs) != runtimeRuns || len(store.runs) != len(outputs) {

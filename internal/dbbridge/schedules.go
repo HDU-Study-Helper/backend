@@ -77,7 +77,12 @@ func (r *schedules) Create(ctx context.Context, owner string, s model.Schedule) 
 	return
 }
 func (r *schedules) Get(ctx context.Context, owner, id string) (model.Schedule, error) {
-	return scanSchedule(r.db.pool.QueryRow(ctx, `SELECT `+scheduleColumns+` FROM schedules WHERE user_id=$1 AND id=$2`, owner, id))
+	args := []any{owner, id}
+	where := `user_id=$1 AND id=$2`
+	for _, bound := range firstDataBounds(ctx, owner, "schedules", &args) {
+		where += " AND " + bound
+	}
+	return scanSchedule(r.db.pool.QueryRow(ctx, `SELECT `+scheduleColumns+` FROM schedules a WHERE `+where, args...))
 }
 func (r *schedules) List(ctx context.Context, owner string, q model.ScheduleQuery) ([]model.Schedule, error) {
 	if owner == "" || q.Offset < 0 || q.Offset > 100000 || q.Limit < 0 || q.Limit > 1000 {
@@ -97,7 +102,12 @@ func (r *schedules) List(ctx context.Context, owner string, q model.ScheduleQuer
 	if (q.AcademicYear != 0 || q.Term != 0) && !sem {
 		return nil, model.ErrInvalidArgument
 	}
-	rows, e := r.db.pool.Query(ctx, `SELECT `+scheduleColumns+` FROM schedules WHERE user_id=$1 AND active AND ($2=0 OR academic_year=$2) AND ($3=0 OR term=$3) AND ($4=0 OR teaching_week=$4) AND ($5::timestamptz IS NULL OR end_time>$5) AND ($6::timestamptz IS NULL OR start_time<$6) ORDER BY start_time,id LIMIT $7 OFFSET $8`, owner, q.AcademicYear, q.Term, q.TeachingWeek, optionalTime(q.From), optionalTime(q.To), q.Limit, q.Offset)
+	args := []any{owner, q.AcademicYear, q.Term, q.TeachingWeek, optionalTime(q.From), optionalTime(q.To), q.Limit, q.Offset}
+	where := `user_id=$1 AND active AND ($2=0 OR academic_year=$2) AND ($3=0 OR term=$3) AND ($4=0 OR teaching_week=$4) AND ($5::timestamptz IS NULL OR end_time>$5) AND ($6::timestamptz IS NULL OR start_time<$6)`
+	for _, bound := range firstDataBounds(ctx, owner, "schedules", &args) {
+		where += " AND " + bound
+	}
+	rows, e := r.db.pool.Query(ctx, `SELECT `+scheduleColumns+` FROM schedules a WHERE `+where+` ORDER BY start_time,id LIMIT $7 OFFSET $8`, args...)
 	if e != nil {
 		return nil, storageError(e)
 	}

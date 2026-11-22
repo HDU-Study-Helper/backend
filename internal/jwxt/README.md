@@ -18,7 +18,7 @@ QRLogin=false，BeginAuth/PollAuth 返回 unsupported。普通 Adapter.Sync 对 
 
 ## 后台与 API
 
-配置已有 `CREDENTIAL_KEY` 后，后台 `/admin` 的学习平台区域展示“杭电教务登录”：输入统一认证账号密码，提交后清空密码输入框。登录只建立并保存会话，不自动抓课表或课程。已有 active 连接展示学年起始年份、学期选择、首周周一日期和图形化时间表编辑器（节数、课时、休息及顺延），以及“获取课表”“获取已选课程”。默认值仅作为可编辑的日历建议，学年学期最终由用户选择；手动请求保存后可在数据预览中选“杭电教务（手动采集）”。预览自动刷新只读取数据库。
+配置已有 `CREDENTIAL_KEY` 后，后台 `/admin` 的学习平台区域展示“杭电教务登录”：输入统一认证账号密码，提交后清空密码输入框。登录只建立并保存会话，不自动抓课表或课程。已有 active 连接展示学年起始年份和学期选择，独立“已选课程”区域提供“抓取已选课程”“查看已保存课程”和归档续页，直接列出课程、教师、学分、性质/类别和教学班。选课抓取不需要校历；回执区分本页数量与源续页，续页须手动点击，不自动连续请求。下方课表区域仍有首周周一日期和图形化时间表编辑器（节数、课时、休息及顺延）及“获取课表”。默认值仅作为可编辑的日历建议，学年学期最终由用户选择；手动请求保存后可在数据预览中选“杭电教务（手动采集）”。预览自动刷新只读取数据库。
 
 所有 API 挂在应用会话认证下，POST 沿用 Origin + CSRF：
 
@@ -31,7 +31,7 @@ POST /api/v1/platforms/connections/{id}/sync
 课表：{"resource":"schedule","academic_year":2026,"term":1,"calendar":{"week_one_monday":"<该学期首周周一YYYY-MM-DD>","periods":[{"period":1,"start":"HH:mm","end":"HH:mm"}]}}
 → 200 完整快照日程刷新统计；calendar必填，含全部所需节次
 已选课程：{"resource":"course","academic_year":2026,"term":1}
-→ 200 {"status":"page_committed"}
+→ 200 {"status":"page_committed","page_count":本页已提交数量,"has_more":是否仍有续页,"academic_year":2026,"term":1}
 
 GET /api/v1/platforms/connections/{id}/records?resource=schedule&limit=20
 GET /api/v1/preview/records?source=jwxt&connection_id=...&resource=course
@@ -43,6 +43,7 @@ academic_year 是学年起始年份（2000–2100），term 只接受1/2，对�
 ## 数据、分页和身份
 
 - `schedule`、`course` 统一存到 platform_records，ParentID 为 JSON `[学年起始年份,学期]`。checkpoint 按 `resource:year:term` 隔离，抓取状态仍按资源汇总最近一次手动尝试。
+- 读取已归档 `jwxt/course` 时，中央模型层按用户要求计算 `course_delivery` 默认标记：schedule_raw、location_raw和location均未提供（缺失/null/空白/明确占位符）时返回mode=online、is_default=true及basis=default_missing_time_and_location，页面显示“线上课程（默认）”。只有其中一项缺失、不明类型、待定或明确实践地点不满足；未标记不代表已确认线下。标记不写入原始content，不改变hash/观察时间，也不代表教务正式认定；后续原数据补充后重新计算。只影响当前已实现的教务课程记录API与归档预览，不声称已自动建立跨平台课程映射或写入Agent记忆。
 - 已选课程 ExternalID 为 `[course_id,class_id]`，两个 ID 均要求源端明确；course_id 优先 kch_id 再 kch，class_id 优先 jxb_id 再 do_jxb_id。标题来自 kcmc。
 - 课表没有经过验证的稳定安排 ID，采用课程/教学班/标题/星期/节次/周次/教室/教师的文本哈希，明确 `identity_source=schedule_text_hash`。来源身份仍为文本哈希；中心手动课表同步会以最新完整快照刷新本连接本学期归档及日程，移除已消失的来源记录。实践项按 qtkcgs 原文生成 practice_text_hash，没有可核实身份则不伪造课程关联。
 - Fields 白名单：academic_year、term、entry_type、course_id/class_id（有值时）、class_name、credits_raw、category、course_category、nature、teacher、teacher_raw、teacher_name、location、location_raw、campus、assessment_raw、total_hours_raw、weekly_hours_raw、schedule_raw。普通课表额外 weekday（1–7）、periods_raw、weeks_raw、identity_source；实践只含学年、学期、entry_type=practice、identity_source。不保存 xsxx、学号等整份个人资料、原始响应对象或操作票据。

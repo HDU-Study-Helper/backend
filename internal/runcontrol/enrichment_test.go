@@ -33,11 +33,11 @@ func (d *enrichmentData) Query(_ context.Context, s f.Scope, q f.Query) (f.Query
 
 type enrichmentRepo struct {
 	f.Repository
-	owner string
+	workflowLists int
 }
 
-func (r *enrichmentRepo) ListWorkflows(_ context.Context, owner string, _ int, _ string) ([]f.Workflow, error) {
-	r.owner = owner
+func (r *enrichmentRepo) ListWorkflows(_ context.Context, _ string, _ int, _ string) ([]f.Workflow, error) {
+	r.workflowLists++
 	return []f.Workflow{}, nil
 }
 func TestEnrichmentQueriesExactOwnerRecordAndOpaqueCourse(t *testing.T) {
@@ -47,8 +47,8 @@ func TestEnrichmentQueriesExactOwnerRecordAndOpaqueCourse(t *testing.T) {
 	b := model.ControlBatch{OwnerID: "owner"}
 	change := model.ControlChange{RecordID: "10", ConnectionID: "connection", Source: "chaoxing"}
 	ctx := s.enrichItemContext(context.Background(), b, change)
-	if len(data.queries) != 2 || repo.owner != "owner" {
-		t.Fatal(data.queries, repo.owner)
+	if len(data.queries) != 2 || repo.workflowLists != 0 {
+		t.Fatal(data.queries, "unexpected Workflow preselection queries:", repo.workflowLists)
 	}
 	for _, scope := range data.scopes {
 		if scope.OwnerID != "owner" {

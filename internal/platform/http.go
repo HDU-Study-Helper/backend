@@ -163,7 +163,13 @@ func (s *Service) Routes() http.Handler {
 					failHTTP(w, r, contract.ErrInvalid)
 					return
 				}
-				syncErr = s.SyncTerm(r.Context(), requestScope(r), in.Resource, in.AcademicYear, in.Term)
+				page, err := s.SyncTermPage(r.Context(), requestScope(r), in.Resource, in.AcademicYear, in.Term)
+				if err != nil {
+					failHTTP(w, r, err)
+					return
+				}
+				httpkit.WriteJSON(w, 200, page)
+				return
 			} else if in.CourseID != "" || in.ClassID != "" {
 				if in.Resource != contract.Discussion {
 					failHTTP(w, r, contract.ErrInvalid)

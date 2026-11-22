@@ -345,6 +345,7 @@ func (r *platformRepo) Records(ctx context.Context, s model.DWSScope, kind strin
 		if e = rows.Scan(&v.ID, &v.Source, &v.Kind, &v.ExternalID, &v.ParentID, &v.Hash, &v.Content, &v.ObservedAt); e != nil {
 			return nil, storageError(e)
 		}
+		v.CourseDelivery = model.DefaultCourseDelivery(v)
 		out = append(out, v)
 	}
 	return out, storageError(rows.Err())

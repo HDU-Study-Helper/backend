@@ -21,6 +21,8 @@ import (
 var page embed.FS
 
 type Console struct {
+	ChatStore model.ChatStore
+	Actions   model.ActionRepository
 	Service   *agent.Service
 	Settings  *SettingsManager
 	repo      f.Repository
@@ -144,7 +146,7 @@ func respondRunError(w http.ResponseWriter, r *http.Request, err error, runID st
 			status = 502
 		case "NOT_IMPLEMENTED":
 			status = 503
-		case "EXECUTION_LIMIT_EXCEEDED":
+		case "EXECUTION_LIMIT_EXCEEDED", "MODEL_SERVICE_SELECTION_REQUIRED":
 			status = 422
 		}
 	}
@@ -235,7 +237,7 @@ func (c *Console) validateAgent(a f.AgentDefinition) error {
 			return f.Fail("INVALID_ARGUMENT", "包含未知权限")
 		}
 	}
-	provider := false
+	provider := a.Model.Provider == "@configured"
 	for _, p := range c.Settings.View().Providers {
 		if p.Name == a.Model.Provider {
 			provider = true
@@ -253,6 +255,9 @@ func (c *Console) validateAgent(a f.AgentDefinition) error {
 	if a.Model.MaxTokens < 0 || a.Model.MaxTokens > 65536 {
 		return f.Fail("INVALID_ARGUMENT", "模型输出 Token 限制无效")
 	}
+	if err := f.ValidateModelParameters(a.Model.Parameters); err != nil {
+		return err
+	}
 	l := a.Limits
 	if l.ModelCalls < 0 || l.ToolCalls < 0 || l.DispatchDepth < 0 || l.DispatchDepth > 8 || l.MaxConcurrent < 0 || l.MaxConcurrent > 16 || l.ContextBytes < 0 || l.ContextBytes > 4<<20 || l.MemoryBytes < 0 || l.MemoryBytes > 128<<10 || l.ToolResultBytes < 0 || l.ToolResultBytes > 128<<10 || l.RunTimeout < 0 || l.RunTimeout > 24*time.Hour || l.ToolTimeout < 0 || l.ToolTimeout > 600*time.Second {
 		return f.Fail("INVALID_ARGUMENT", "运行限制超出后台允许范围")
@@ -265,7 +270,7 @@ func (c *Console) saveAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input agentInput
-	if httpkit.DecodeJSON(w, r, &input) != nil {
+	if httpkit.DecodeJSONLimit(w, r, &input, 128<<10) != nil {
 		return
 	}
 	if err := c.validateAgent(input.AgentDefinition); err != nil {

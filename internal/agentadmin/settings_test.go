@@ -72,6 +72,7 @@ func TestSettingsEncryptedRetainedClearedAndReloaded(t *testing.T) {
 	}
 	oldProvider := s.ResolveProvider("default")
 	view.Providers[0].DefaultModel = "new-model"
+	view.Providers[0].APIProtocol = "responses"
 	view, err = s.Save(context.Background(), view)
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +84,7 @@ func TestSettingsEncryptedRetainedClearedAndReloaded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.View().Providers[0].DefaultModel != "new-model" || restored.ResolveProvider("default") == nil || restored.ResolveProvider("demo") != nil {
+	if restored.View().Providers[0].DefaultModel != "new-model" || restored.View().Providers[0].APIProtocol != "responses" || restored.ResolveProvider("default") == nil || restored.ResolveProvider("demo") != nil {
 		t.Fatal("restart persistence failed")
 	}
 	_, err = s.Save(context.Background(), config)

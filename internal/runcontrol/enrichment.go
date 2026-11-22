@@ -107,6 +107,9 @@ func (s *Service) enrichItemContext(ctx context.Context, b model.ControlBatch, c
 			item := structured.Rows[0]
 			facts["academic_item"] = item
 			facts["preferred_query_dataset"] = "academic_items"
+			if candidates, e := FindAssignmentNoticeCandidates(lookup, s.Data, scope, change, record, item); e == nil && candidates != nil {
+				facts["related_account_notice_candidates"] = candidates
+			}
 			if id, ok := item["id"].(string); ok && isAcademicItemID(id) {
 				ctx = context.WithValue(ctx, knownAcademicEvidenceKey{}, academicEvidenceReferences{OwnerID: b.OwnerID, ConnectionID: change.ConnectionID, RecordID: change.RecordID, IDs: map[string]bool{id: true}})
 			}
@@ -132,7 +135,6 @@ func (s *Service) enrichItemContext(ctx context.Context, b model.ControlBatch, c
 			facts["course_link_source"] = map[string]any{"record_id": change.RecordID, "title": record["title"], "course_name": record["course_name"]}
 		}
 	}
-	workflows := map[string]any{"complete": false, "items": []any{}}
 	if course != nil {
 		refs := map[string]bool{}
 		for ref, allowed := range knownEvidenceReferences(ctx) {
@@ -167,49 +169,13 @@ func (s *Service) enrichItemContext(ctx context.Context, b model.ControlBatch, c
 		name, _ := course["title"].(string)
 		entityID := "source=" + change.Source + "|connection=" + change.ConnectionID + "|course_ref=" + ref
 		facts["entity"] = map[string]string{"kind": "course", "id": entityID, "name": name}
-		summaries := []map[string]any{}
-		after := ""
-		complete := false
-		for pages := 0; pages < 20; pages++ {
-			items, e := s.Agents.Registry.Repository.ListWorkflows(lookup, b.OwnerID, 100, after)
-			if e != nil {
-				break
-			}
-			for _, w := range items {
-				var d struct {
-					Entity struct {
-						Kind string `json:"kind"`
-						ID   string `json:"id"`
-						Name string `json:"name"`
-					} `json:"entity"`
-					Goal string `json:"goal"`
-				}
-				if w.OwnerID != b.OwnerID || w.Status != "active" || json.Unmarshal(w.Definition, &d) != nil || d.Entity.Kind != "course" || d.Entity.ID != entityID {
-					continue
-				}
-				summaries = append(summaries, map[string]any{"workflow_id": w.ID, "version": w.Version, "status": w.Status, "name": w.Name, "entity": d.Entity, "goal": d.Goal})
-			}
-			if len(items) < 100 {
-				complete = true
-				break
-			}
-			next := items[len(items)-1].ID
-			if next == "" || next == after {
-				break
-			}
-			after = next
-		}
-		workflows = map[string]any{"complete": complete, "entity_id": entityID, "items": summaries}
+
 	}
-	raw, err := json.Marshal(facts)
+	raw, err := marshalEvidenceWithOptionalNotices(facts)
 	if err != nil || len(raw) > 48<<10 {
 		return ctx
 	}
-	summary, err := json.Marshal(workflows)
-	if err != nil || len(summary) > 16<<10 {
-		return f.WithHostEvidence(ctx, b.OwnerID, raw, nil)
-	}
-	return f.WithHostEvidence(ctx, b.OwnerID, raw, summary)
+	return f.WithHostEvidence(ctx, b.OwnerID, raw, nil)
 }
 
 // DWS native message IDs are unique only within their connection and group.

@@ -270,7 +270,20 @@ func (s *Service) syncPageTerm(ctx context.Context, scope model.DWSScope, resour
 
 // syncPageResult exposes continuation only after a successful atomic page commit.
 func (s *Service) syncPageResult(ctx context.Context, scope model.DWSScope, resource contract.Resource, courseID, classID string, year, term int) (bool, error) {
-	committedMore := false
+	page, err := s.syncPageDetails(ctx, scope, resource, courseID, classID, year, term)
+	return page.HasMore, err
+}
+
+type SyncPageReceipt struct {
+	Status       string `json:"status"`
+	PageCount    int    `json:"page_count"`
+	HasMore      bool   `json:"has_more"`
+	AcademicYear int    `json:"academic_year"`
+	Term         int    `json:"term"`
+}
+
+func (s *Service) syncPageDetails(ctx context.Context, scope model.DWSScope, resource contract.Resource, courseID, classID string, year, term int) (SyncPageReceipt, error) {
+	receipt := SyncPageReceipt{AcademicYear: year, Term: term}
 	key := string(resource)
 	if year != 0 {
 		key += ":" + strconv.Itoa(year) + ":" + strconv.Itoa(term)
@@ -391,10 +404,15 @@ func (s *Service) syncPageResult(ctx context.Context, scope model.DWSScope, reso
 		}
 		pageCount = len(records)
 		hasMore = page.HasMore
-		committedMore = page.HasMore
+		receipt.Status = "page_committed"
+		receipt.PageCount = len(records)
+		receipt.HasMore = page.HasMore
 		return nil
 	})
-	return committedMore, err
+	if err != nil {
+		return SyncPageReceipt{}, err
+	}
+	return receipt, nil
 }
 func validResource(r contract.Resource) bool {
 	return r == contract.Course || r == contract.Chapter || r == contract.Lesson || r == contract.Schedule || r == contract.Assignment || r == contract.Exam || r == contract.Progress || r == contract.Notice || r == contract.Discussion || r == contract.Material

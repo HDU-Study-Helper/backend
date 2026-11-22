@@ -86,7 +86,7 @@ HTTP 429 → ErrRateLimited；401/403/登录重定向/登录HTML → ErrAuthRequ
 ## 作业头、教学目录和个人节点进度
 
 - 作业列表返回的 `li[data]` 仅当 origin 为 `https://mooc1.chaoxing.com`、路径精确为 `/mooc-ans/mooc2/work/task` 且单一 `courseId/classId/workId` 与当前记录一致时读取；重定向最多2次，仅允许同 origin、同身份的 `/mooc-ans/mooc2/work/view`。拒绝任何 dowork、开始作答、表单提交、JS、域外或错身份路由；不会从标题猜 ID 或构造答题入口。被拒绝重定向保留列表观察，标记 `header_status=unavailable/header_reason=unsafe_redirect_blocked`；网络、认证、取消仍使本页失败。
-- 每次最多处理5条作业头；未完成项及来源 URL 只进入宿主加密游标，所有记录字段均无 URL/CPI/签名。已读头信息合并到原作业记录，不生成新身份。仅解析首个任务内容边界之前的可见 `detailsHead/infoHead` 等已知头容器，保留 `answer_time_raw`、`question_count/full_score` 和 `start_at/end_at/deadline_*` 字段依据，不把题目、答案、脚本、隐藏值写入记录。没有可识别头信息时明确 unavailable。
+- 每次最多处理5条作业头；未完成项及来源 URL 只进入宿主加密游标，所有记录字段均无 URL/CPI/签名。已读头信息合并到原作业记录，不生成新身份。仅解析首个任务内容边界之前的可见 `detailsHead/infoHead` 等已知头容器，保留 `answer_time_raw`、`question_count/full_score` 和 `start_at/end_at/deadline_*` 字段依据，不把题目、答案、脚本、隐藏值写入记录。未开放作业的可见头部只给开始时间时，仅提取开始时间。缺少可识别头信息时标记 unavailable。
 - 授权预检已确认目标“2026 第二章第三次作业20261102”的实际官方 view 页展示“题量10、满分100、作答时间11-04 09:30至11-08 23:59”。源日期缺年，输出 `*_precision=unknown/*_reason=missing_year`；标题中的2026不参与补年。
 - `chapter/lesson` 的 ParentID 始终为课程 JSON `[course_id,class_id]`，ExternalID 为原生知识节点 ID。Fields 包含 `node_id,parent_node_id,path,path_ids,order,number`（有源值时）和 `coverage=teaching_chapter_tree`；目录标题无 ID 时不伪造章节记录，其名称仍在 path，path_ids 只包含有原生 ID 的祖先及当前节点。嵌套原生节点作为 chapter，叶子作为 lesson。
 - `progress` 保留 ExternalID=`task-points` 汇总，增加 ExternalID=`node:<nativeID>` 的个人节点观察，coverage=`personal_node_task_points`。`knowledgeJobCount` 是唯一允许读取的隐藏数值元数据，映射 `task_point_total`；可见 `catalog_points_yi` 映射 `task_point_remaining`，只有零才明确 completed，正数为 incomplete；显式 `icon_yiwanc` 也支持 completed，缺标记保持 unknown。`task_point_completed=total-remaining` 仅在两个明确计数一致时提供并注明计算来源，不推断视频时长或精确百分比。

@@ -19,6 +19,10 @@ err = service.Run(ctx)
 
 Run 通过显式 worker-only ListPollTargets 分页读取 enabled/active 连接，先恢复 ListPendingJobs，再按 allowlist 创建轮询任务。POST sync 创建持久化 queued job，返回202；内存队列用于立即唤醒，进程重启后持久 pending 由下一轮扫描恢复。任务执行前获得连接独占 fencing lease 并 StartJob；成功事务 CommitSync，失败记录安全错误码。连接删除/禁用由 Repository fencing 拒绝旧执行者提交。Service.Disconnect 先数据库禁用，再按精确 owner+connection 取消本进程在途执行，最多等待12秒完成进程终止、工作区清理和lease释放；登记在取得独占lease后，登记后重读连接以拒绝与断开竞争的disabled连接。多进程部署中其他进程依靠DB fencing拒写，取消映射仅覆盖当前进程。单轮顺序执行，慢连接影响其他连接延迟；首版没有并发调度和退避策略。
 
+## Trigger 群批次
+
+新采集变化由存储层按刷新轮次、应用用户、连接和群分别封批，消息与附件均携带可信 `group_id`。同群变化超过100条或约44KB时在群内拆块，不同群不合并。Trigger收到群范围 `scope:{kind:"group",connection_id,group_id}`；已封存的历史批次不重分组。缺失或冲突的群归属逐条保留为blocked，等待核查。此规则只改变批次组织，不触发采集、模型运行或重放历史。
+
 ## 授权与隔离
 
 只支持 personal；school 返回 unsupported。后台首次绑定使用 `POST /api/v1/dws/link`，无请求体，无需填写企业或钉钉用户 ID。服务器创建（或复用）当前 owner 的无凭据、全空身份 pending 连接；连接 scope ID 由服务器生成，和上游官方 corp/user ID 分离。旧 `POST /connections` 手动创建路径仍要求精确 profile、corp_id、upstream_user_id，profile 严格等于 `corp:user`，不接受 CSV、多 profile 或 current profile fallback。owner 永远取应用会话，不能由 HTTP 请求选择。群 allowlist 默认为空，不自动发现或采集所有群。

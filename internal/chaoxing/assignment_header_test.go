@@ -51,6 +51,20 @@ func TestAssignmentHeaderMetadataSourceTimeEvidence(t *testing.T) {
 	}
 }
 
+func TestAssignmentHeaderStartOnly(t *testing.T) {
+	for _, label := range []string{"开始时间", "作答时间", "答题时间"} {
+		fields, err := assignmentHeaderMetadata([]byte(`<div class="detailsHead"><p>` + label + `：10-28 09:35</p></div>`))
+		if err != nil || fields["start_at_raw"] != "10-28 09:35" || fields["start_at_source"] != "assignment_header:"+label || fields["start_at_reason"] != "missing_year" {
+			t.Fatal(label, fields, err)
+		}
+		for _, key := range []string{"end_at_raw", "deadline_raw", "published_at_raw"} {
+			if _, ok := fields[key]; ok {
+				t.Fatalf("start-only header emitted %s", key)
+			}
+		}
+	}
+}
+
 func TestAssignmentHeaderActualMarkingShell(t *testing.T) {
 	fields, err := assignmentHeaderMetadata([]byte(`<div id="fanyaMarking" class="fanyaMarking TiMu"><div class="fanyaMarking_left whiteBg"><div class="borderBom padBom20 detailsHead"><h2 class="mark_title">2026 Homework</h2><div class="infoHead fl"><span>题量: 10</span><span>满分: 100</span><div><p class="rightBord">作答时间: 11-04 09:30 至 11-08 23:59</p></div></div></div><div class="TiMu"><div class="infoHead"><p>作答时间: 01-01至01-02</p></div></div></div></div>`))
 	if err != nil || fields["deadline_raw"] != "11-08 23:59" || fields["question_count"] != 10 {

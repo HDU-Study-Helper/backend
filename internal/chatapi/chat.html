@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chat 测试 · Academic</title>
+<style>
+:root{font:15px/1.6 system-ui,sans-serif;color:#17243b;background:#f4f6fa;--line:#dce4f0;--blue:#3159d9;--muted:#586983}
+*{box-sizing:border-box}body{margin:0}main{max-width:880px;margin:auto;padding:24px 16px 48px}h1{margin:8px 0 0}h2{font-size:16px;margin:0 0 8px}p{margin:8px 0}a{color:var(--blue)}nav,.bar,.buttons{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.bar{justify-content:space-between}.panel{border:1px solid var(--line);border-radius:12px;background:white;padding:16px;margin-top:14px}small,.muted{color:var(--muted)}label{display:block;font-weight:600}input,textarea{display:block;width:100%;margin:6px 0 10px;padding:9px;border:1px solid var(--line);border-radius:8px;font:inherit}textarea{resize:vertical}button{font:inherit;font-weight:600;background:white;color:inherit;border:1px solid var(--line);border-radius:8px;padding:7px 13px;cursor:pointer}button.primary{background:var(--blue);color:white;border-color:var(--blue)}button:disabled{opacity:.5;cursor:not-allowed}#status{min-height:1.6em;color:var(--muted);overflow-wrap:anywhere}#status.error{color:#a62e40}#history{max-height:54vh;overflow:auto;overflow-wrap:anywhere;min-height:72px}.bubble{background:#f0f4fa;border-radius:10px;padding:10px 12px;margin:10px 0;white-space:pre-wrap}.bubble.user{background:#edf2ff;margin-left:clamp(0px,8vw,60px)}.bubble strong{display:block;font-size:12px}pre{white-space:pre-wrap;overflow-wrap:anywhere}details{margin:8px 0}fieldset{margin:8px 0;border:1px solid var(--line);border-radius:8px;padding:10px}fieldset p{white-space:pre-wrap;overflow-wrap:anywhere}[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <nav><a href="/admin/agents">← 智能体后台</a><a href="/admin/tasks">运行与结果</a></nav>
+  <h1>Chat 测试</h1>
+  <p class="muted">使用当前登录账号的真实 Chat。消息可能触发 Worker、Learner 和实际写入，不是模拟运行。</p>
+  <section class="panel" id="loginGate" hidden aria-labelledby="loginTitle">
+    <h2 id="loginTitle">登录后测试</h2>
+    <form id="loginForm">
+      <label>用户名<input name="username" autocomplete="username" required></label>
+      <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="primary" id="loginButton" type="submit">登录</button>
+    </form>
+  </section>
+  <section class="panel" id="chat" hidden aria-label="Chat 会话">
+    <div class="bar"><div><strong id="identity"></strong><br><small id="threadLabel"></small></div><div class="buttons"><button id="refresh" type="button">刷新记录</button><button id="newThread" type="button">新会话</button></div></div>
+    <div id="history" role="log" aria-label="对话记录"></div>
+    <section id="questions" hidden aria-label="待回答的问题"></section>
+    <form id="compose">
+      <label for="message">消息</label><textarea id="message" rows="3" maxlength="8192" required placeholder="例如：我这周有哪些待办？"></textarea>
+      <p id="pendingHint" class="muted" hidden>直接发送新消息会放弃本会话未回答的问题。要接着做，请在上方回答原问题。</p>
+      <button class="primary" id="send" type="submit">发送消息</button>
+    </form>
+  </section>
+  <p id="status" role="status" aria-live="polite">正在检查登录状态…</p>
+</main>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+let thread = new URL(location.href).searchParams.get('thread') || '';
+let busy = false;
+const utf8 = new TextEncoder();
+function status(text, error = false) {
+  $('status').textContent = text;
+  $('status').classList.toggle('error', error);
+}
+function setThread(id) {
+  thread = id;
+  const url = new URL(location.href);
+  if (id) url.searchParams.set('thread', id); else url.searchParams.delete('thread');
+  history.replaceState(null, '', url);
+}
+async function api(path, method = 'GET', body) {
+  const headers = {};
+  if (method !== 'GET') {
+    headers['X-CSRF-Token'] = decodeURIComponent(document.cookie.split('; ').find(s => s.startsWith('academic_csrf='))?.slice('academic_csrf='.length) || '');
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+  }
+  const response = await fetch('/api/v1' + path, {method, headers, credentials:'same-origin', body:body === undefined ? undefined : JSON.stringify(body)});
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error(data?.error?.message || `请求失败（HTTP ${response.status}）`);
+    error.status = response.status;
+    error.code = data?.error?.code;
+    throw error;
+  }
+  if (data === null) throw new Error('后台未返回有效响应');
+  return data;
+}
+function setBusy(value) {
+  busy = value;
+  for (const id of ['send','refresh','newThread','loginButton']) $(id).disabled = value || (id === 'refresh' && !thread);
+  $('questions').querySelectorAll('button,input').forEach(element => {element.disabled = value;});
+  $('chat').setAttribute('aria-busy', String(value));
+}
+function bubble(label, text, type) {
+  const article = document.createElement('div');
+  article.className = 'bubble ' + type;
+  const title = document.createElement('strong');
+  title.textContent = label;
+  article.append(title, document.createTextNode(text));
+  $('history').append(article);
+  return article;
+}
+function render(snapshot) {
+  $('threadLabel').textContent = thread ? '会话 ' + thread : '发送第一条消息时创建会话';
+  $('history').replaceChildren();
+  const turns = snapshot.turns || [];
+  const options = new Map();
+  if (!turns.length) bubble('会话提示','还没有消息。','note');
+  for (const turn of turns) {
+    const q = options.get(turn.question_id);
+    const message = q?.options?.find(op => op.id === turn.message)?.label || turn.message;
+    bubble(turn.kind === 'answer' ? '你 · 回答追问' : '你', message, 'user');
+    if (turn.output?.text) {
+      const reply = bubble('Chat', turn.output.text, 'assistant');
+      if (turn.run_id) {
+        const details = document.createElement('details');
+        const summary = document.createElement('summary');
+        summary.textContent = '查看 Run 与原始 JSON';
+        const pre = document.createElement('pre');
+        pre.textContent = 'Run: ' + turn.run_id + '\n' + JSON.stringify(turn.output, null, 2);
+        details.append(summary, pre);
+        reply.append(details);
+      }
+      if (turn.output.interaction?.question_id) options.set(turn.output.interaction.question_id, turn.output.interaction);
+    } else if (turn.state === 'running') {
+      bubble('运行中','稍后点「刷新记录」查看结果。请勿重复发送。','note');
+    } else if (turn.error_code) {
+      bubble('未完成',turn.error_code,'note');
+    }
+  }
+  $('history').scrollTop = $('history').scrollHeight;
+  const pending = snapshot.pending_questions || [];
+  $('questions').replaceChildren();
+  $('questions').hidden = $('pendingHint').hidden = pending.length === 0;
+  for (const q of pending) renderQuestion(q);
+  setBusy(busy);
+}
+function renderQuestion(q) {
+  const group = document.createElement('fieldset');
+  const legend = document.createElement('legend');
+  legend.textContent = '待回答' + (q.role ? ' · ' + q.role : '');
+  const text = document.createElement('p');
+  text.textContent = q.question || q.text;
+  const form = document.createElement('form');
+  form.className = 'buttons';
+  group.append(legend, text, form);
+  const choices = q.options || [];
+  if (choices.length && (q.type === 'CHOICE' || q.type === 'CONFIRM')) {
+    for (const option of choices) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = option.label;
+      button.addEventListener('click', () => perform(() => submit(option.id, q.question_id)));
+      form.append(button);
+    }
+  } else {
+    const input = document.createElement('input');
+    input.required = true;
+    input.maxLength = 8192;
+    input.setAttribute('aria-label','追问回答');
+    input.placeholder = '输入对这条问题的回答';
+    const button = document.createElement('button');
+    button.type = 'submit';
+    button.className = 'primary';
+    button.textContent = '提交回答';
+    form.append(input, button);
+    form.addEventListener('submit', event => {event.preventDefault();perform(() => submit(input.value, q.question_id));});
+  }
+  $('questions').append(group);
+}
+async function refresh() {
+  if (!thread) {render({});return;}
+  render(await api('/chat/threads/' + encodeURIComponent(thread)));
+}
+async function submit(value, question) {
+  const message = value.trim();
+  if (!message || utf8.encode(message).length > 8192) throw new Error('请输入有效内容（最多 8192 字节）。');
+  if (!thread) setThread((await api('/chat/threads','POST')).thread_id);
+  status(question ? '正在接续原任务…' : 'Chat 正在处理，可能需要调用课程智能体…');
+  const body = {request_id:crypto.randomUUID(), message};
+  if (question) body.question_id = question;
+  let turn;
+  try {
+    turn = await api('/chat/threads/' + encodeURIComponent(thread) + (question ? '/answers' : '/messages'), 'POST', body);
+  } catch (error) {
+    // The server may already have applied work. Re-read history; never replay automatically.
+    if (error.status !== 401) await refresh().catch(() => {});
+    throw error;
+  }
+  if (!question) $('message').value = '';
+  await refresh();
+  status(turn.state === 'running' ? '仍在运行，可稍后刷新记录。' : '已更新会话。');
+}
+async function initialize() {
+  const user = await api('/auth/me');
+  $('loginGate').hidden = true;
+  $('chat').hidden = false;
+  $('identity').textContent = user.display_name || user.username;
+  try {await refresh();} catch (error) {
+    if (error.status !== 404) throw error;
+    render({});
+    status('该会话不存在或不属于当前账号。请点「新会话」。', true);
+    return;
+  }
+  status('');
+}
+async function perform(action) {
+  if (busy) return;
+  setBusy(true);
+  try {await action();} catch (error) {
+    if (error.status === 401) {
+      $('loginGate').hidden = false;
+      $('chat').hidden = true;
+      render({});
+    }
+    status(error.message + (error.code ? ' [' + error.code + ']' : ''), true);
+  } finally {setBusy(false);}
+}
+$('loginForm').addEventListener('submit', event => {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  perform(async () => {
+    try {await api('/auth/login','POST',{username:form.get('username'),password:form.get('password')});}
+    finally {$('loginForm').reset();}
+    await initialize();
+  });
+});
+$('compose').addEventListener('submit', event => {event.preventDefault();perform(() => submit($('message').value));});
+$('refresh').addEventListener('click', () => perform(async () => {await refresh();status('已刷新记录。');}));
+$('newThread').addEventListener('click', () => perform(async () => {setThread('');$('message').value='';render({});status('已切换到新会话；旧会话未删除。');$('message').focus();}));
+perform(initialize);
+</script>
+</body>
+</html>

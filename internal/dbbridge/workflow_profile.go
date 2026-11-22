@@ -101,6 +101,9 @@ func (r *agents) CreateWorkflowWithMemories(ctx context.Context, s f.Scope, w f.
 		persisted := make([]f.Memory, len(prepared))
 		ids := make([]string, len(prepared))
 		for i, seed := range prepared {
+			if e := validateMemorySourceRefsTx(ctx, tx, s.OwnerID, seed.SourceRefs); e != nil {
+				return e
+			}
 			seed.ID, seed.OwnerID, seed.WorkflowID = f.NewID(), s.OwnerID, created.ID
 			persisted[i], e = scanMemory(tx.QueryRow(ctx, insertMemorySQL, memoryArgs(seed)...))
 			if e != nil {

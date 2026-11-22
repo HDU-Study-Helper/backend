@@ -22,13 +22,15 @@ import (
 
 	f "academic/agent/framework"
 	"academic/backend/internal/dbbridge"
+	stage "academic/backend/internal/learnerstage"
 	"github.com/jackc/pgx/v5"
 )
 
 type options struct {
-	execute, allowActiveSnapshot                          bool
+	execute, allowActiveSnapshot, prepareOnly             bool
 	sourceSchema, owner, round, output, prompt, resumeDir string
-	parallel                                              int
+	offering, closureStage, healthRequest                 string
+	parallel, diagnosticTimeout                           int
 	timeout                                               time.Duration
 }
 type course struct {
@@ -63,7 +65,12 @@ var snapshotTables = []string{"users", "agent_instances", "agent_framework_setti
 func main() {
 	var o options
 	flag.BoolVar(&o.execute, "execute", false, "create or explicitly resume an isolated regression and call real Learner models")
+	flag.BoolVar(&o.prepareOnly, "prepare-only", false, "clone an isolated snapshot without calling models; requires --execute")
+	flag.StringVar(&o.offering, "offering", "", "select one exact archived offering ID")
+	flag.StringVar(&o.closureStage, "closure-stage", "", "isolated tools, model, learner, full, followup, revise or repair stage; requires --execute")
+	flag.StringVar(&o.healthRequest, "health-request", "", "with model stage, load a retained request as context; never execute its tools")
 	flag.IntVar(&o.parallel, "parallel", 2, "concurrent course cases (1–4), also bounded by original Agent and provider limits")
+	flag.IntVar(&o.diagnosticTimeout, "diagnostic-model-timeout", 90, "closure model request timeout in seconds; isolated settings only")
 	flag.StringVar(&o.resumeDir, "resume-dir", "", "retained regression directory to resume; requires --execute and never reads source")
 	flag.BoolVar(&o.allowActiveSnapshot, "allow-active-snapshot", false, "freeze committed business data even when source has active status records; never copy or alter its execution state")
 	flag.StringVar(&o.sourceSchema, "source-schema", "public", "explicit source schema, always read only")
@@ -88,7 +95,16 @@ func run(ctx context.Context, o options) error {
 	if o.parallel < 1 || o.parallel > 4 {
 		return errors.New("parallel must be between 1 and 4")
 	}
+	if (o.prepareOnly || o.closureStage != "") && !o.execute {
+		return errors.New("prepare-only and closure-stage require explicit --execute")
+	}
+	if o.closureStage != "" && o.closureStage != "tools" && o.closureStage != "model" && o.closureStage != "learner" && o.closureStage != "full" && o.closureStage != "followup" && o.closureStage != "revise" && o.closureStage != "repair" && o.closureStage != "format" {
+		return errors.New("unknown closure stage")
+	}
 	if o.resumeDir != "" {
+		if o.closureStage != "" {
+			return runRetainedClosure(ctx, o)
+		}
 		return resume(ctx, o)
 	}
 	if !identifier.MatchString(o.sourceSchema) || strings.HasPrefix(o.sourceSchema, "learner_regression_") || o.timeout <= 0 {
@@ -224,7 +240,20 @@ func run(ctx context.Context, o options) error {
 	if err = save(filepath.Join(dir, "courses.frozen.private.json"), m.Courses); err != nil {
 		return err
 	}
-	err = executeCourses(ctx, o, db, target, vault, dir, m, string(prompt), nil)
+	if o.prepareOnly {
+		m.Mode = "completed"
+		m.Note += " Snapshot preparation only; no model calls or source collection."
+		if err = save(filepath.Join(dir, "manifest.json"), m); err != nil {
+			return err
+		}
+		fmt.Println("Prepared isolated snapshot:", dir)
+		return nil
+	}
+	if o.closureStage != "" {
+		err = executeClosure(ctx, o, db, target, vault, dir, m)
+	} else {
+		err = executeCourses(ctx, o, db, target, vault, dir, m, string(prompt), nil)
+	}
 	if ctx.Err() != nil {
 		m.Mode = "interrupted"
 	} else {
@@ -237,7 +266,7 @@ func run(ctx context.Context, o options) error {
 }
 
 func selectCourses(ctx context.Context, tx pgx.Tx, o options) ([]course, error) {
-	rows, err := tx.Query(ctx, `SELECT a.user_id,a.connection_id,a.source,a.id,a.course_ref,a.name,a.record_id::text FROM academic_offerings a JOIN users u ON u.id=a.user_id JOIN platform_connections c ON(c.user_id,c.id)=(a.user_id,a.connection_id) WHERE NOT u.disabled AND c.enabled AND c.state='active' AND a.source IN('chaoxing','mooc') AND ($1='' OR a.user_id=$1) AND ($2='' OR EXISTS(SELECT 1 FROM control_batches b WHERE b.round_id=$2 AND b.owner_id=a.user_id AND b.source=a.source AND b.batch_scope->>'connection_id'=a.connection_id AND (b.batch_scope->>'offering_id'=a.id OR b.batch_scope->>'course_ref'=a.course_ref))) ORDER BY a.user_id,a.source,a.connection_id,a.id`, o.owner, o.round)
+	rows, err := tx.Query(ctx, `SELECT a.user_id,a.connection_id,a.source,a.id,a.course_ref,a.name,a.record_id::text FROM academic_offerings a JOIN users u ON u.id=a.user_id JOIN platform_connections c ON(c.user_id,c.id)=(a.user_id,a.connection_id) WHERE NOT u.disabled AND c.enabled AND c.state='active' AND a.source IN('chaoxing','mooc') AND ($1='' OR a.user_id=$1) AND ($2='' OR EXISTS(SELECT 1 FROM control_batches b WHERE b.round_id=$2 AND b.owner_id=a.user_id AND b.source=a.source AND b.batch_scope->>'connection_id'=a.connection_id AND (b.batch_scope->>'offering_id'=a.id OR b.batch_scope->>'course_ref'=a.course_ref))) AND ($3='' OR a.id=$3) ORDER BY a.user_id,a.source,a.connection_id,a.id`, o.owner, o.round, o.offering)
 	if err != nil {
 		return nil, errors.New("cannot enumerate all eligible offerings")
 	}
@@ -379,7 +408,7 @@ func synchronizeLearners(ctx context.Context, db *dbbridge.DB, courses []course,
 			return err
 		}
 		a.SystemPrompt = prompt
-		a.EnabledTools = filter(a.EnabledTools, map[string]bool{"data_list_tables": true, "data_describe_table": true, "data_query": true, "data_search": true, "workflow_list": true, "workflow_get": true, "workflow_create": true, "memory_search": true, "memory_list": true, "memory_get": true, "memory_get_relations": true})
+		a.EnabledTools = filter(a.EnabledTools, map[string]bool{"data_list_tables": true, "data_describe_table": true, "data_query": true, "data_search": true, "workflow_list": true, "workflow_get": true, "workflow_create": true, "workflow_update": true, "memory_search": true, "memory_list": true, "memory_get": true, "memory_get_relations": true, "memory_create": true, "memory_update": true, "memory_create_relation": true})
 		a.Permissions = filter(a.Permissions, map[string]bool{"data.read": true, "workflow.read": true, "workflow.write": true, "memory.read": true, "memory.write": true})
 		if _, err = db.Agents().PutAgent(ctx, a); err != nil {
 			return err
@@ -398,7 +427,7 @@ func filter(values []string, allowed map[string]bool) []string {
 	return out
 }
 func caseInput(c course) map[string]any {
-	return map[string]any{"task": "根据已归档授权数据，为此课程首次创建可复用Workflow并初始化整体私有画像。先核实给定课程身份，按当前提示词逐层调查。记录真实缺口，不以已知ID断言所有记录已关联；不创建日程、不发送通知、不访问或修改外部平台。必须实际调用workflow_create(initial_private_memories)并回读核验。", "context": map[string]any{"request_type": "CREATE", "verification_replay": true, "entity": map[string]string{"kind": "course", "id": "source=" + c.Source + "|connection=" + c.Connection + "|course_ref=" + c.Ref, "name": c.Name}, "source": c.Source, "connection_id": c.Connection, "course_ref": c.Ref, "offering_id": c.ID, "course_record_id": c.Record}}
+	return map[string]any{"task": "根据已归档授权数据，为此课程初始化可持续使用的Workflow。先核实课程身份，选择或暂存新建目标，按当前提示词分层调查并用Workflow与Memory工具编辑暂存定义和有来源的知识；记录追踪范围、用户要求及真实未知，不以已知ID断言所有记录已关联。不要使用initial_private_memories旧入口，不创建日程、不发送通知、不访问或修改外部平台。完成后读取learner_stage_state，返回匹配当前会话和修订号的READY_TO_COMMIT；正式提交与兼容回执由宿主校验产生。", "context": map[string]any{"request_type": "CREATE", "verification_replay": true, "entity": map[string]string{"kind": "course", "id": "source=" + c.Source + "|connection=" + c.Connection + "|course_ref=" + c.Ref, "name": c.Name}, "source": c.Source, "connection_id": c.Connection, "course_ref": c.Ref, "offering_id": c.ID, "course_record_id": c.Record}}
 }
 
 type caseResult struct {
@@ -430,12 +459,31 @@ func verifyCreation(ctx context.Context, db *dbbridge.DB, c course, output strin
 		return false, "successful workflow_create audit missing"
 	}
 	var r struct {
-		Status  string `json:"status"`
-		ID      string `json:"workflow_id"`
-		Version int    `json:"workflow_version"`
+		Status   string `json:"status"`
+		ID       string `json:"workflow_id"`
+		Version  int    `json:"workflow_version"`
+		Verified bool   `json:"verified"`
+		Receipt  struct {
+			SessionID       string   `json:"session_id"`
+			Revision        int      `json:"staging_revision"`
+			Operation       string   `json:"operation"`
+			Status          string   `json:"status"`
+			WorkflowID      string   `json:"workflow_id"`
+			WorkflowVersion int      `json:"workflow_version"`
+			MemoryIDs       []string `json:"memory_ids"`
+			Verified        bool     `json:"verified"`
+		} `json:"commit_receipt"`
 	}
-	if json.Unmarshal([]byte(output), &r) != nil || r.Status != "APPLIED" || r.ID == "" {
-		return false, "no APPLIED creation receipt"
+	if json.Unmarshal([]byte(output), &r) != nil || r.Status != "APPLIED" || r.ID == "" || !r.Verified || r.Receipt.SessionID == "" || r.Receipt.Revision < 1 || r.Receipt.Operation != "CREATE" || r.Receipt.Status != "COMMITTED" || !r.Receipt.Verified || r.Receipt.WorkflowID != r.ID || r.Receipt.WorkflowVersion != r.Version {
+		return false, "no verified APPLIED staging creation receipt"
+	}
+	staging, ok := db.Agents().(stage.Store)
+	if !ok {
+		return false, "staging receipt store unavailable"
+	}
+	ledger, err := staging.LearnerStageReceipt(ctx, c.Owner, r.Receipt.SessionID)
+	if err != nil || ledger.SessionID != r.Receipt.SessionID || ledger.Revision != r.Receipt.Revision || ledger.Operation != "CREATE" || ledger.Status != "COMMITTED" || !ledger.Verified || ledger.WorkflowID != r.ID || ledger.WorkflowVersion != r.Version || len(ledger.MemoryIDs) == 0 {
+		return false, "durable staging receipt mismatch"
 	}
 	w, err := db.Agents().GetWorkflow(ctx, c.Owner, r.ID)
 	if err != nil || w.Status != "active" || w.Version != r.Version {
@@ -452,20 +500,24 @@ func verifyCreation(ctx context.Context, db *dbbridge.DB, c course, output strin
 	if err != nil {
 		return false, "cannot read persisted private profile"
 	}
-	index, fact := false, false
+	if len(memories) == 0 {
+		return false, "no sourced Workflow private knowledge persisted"
+	}
+	seen := map[string]bool{}
 	for _, m := range memories {
 		var refs []json.RawMessage
-		if m.WorkflowID != w.ID || m.AgentID != "" || m.Visibility != "PRI" || m.Status != "active" || json.Unmarshal(m.SourceRefs, &refs) != nil || len(refs) == 0 {
-			continue
+		if m.WorkflowID != w.ID || m.OwnerID != c.Owner || m.AgentID != "" || m.Visibility != "PRI" || m.Status != "active" || strings.TrimSpace(m.Content) == "" || json.Unmarshal(m.SourceRefs, &refs) != nil || len(refs) == 0 {
+			return false, "invalid private knowledge ownership, state or sources"
 		}
-		if m.Category == "profile_index" {
-			index = true
-		} else if map[string]bool{"identity": true, "timetable": true, "teaching_progress": true, "assignments": true, "materials": true, "discussion_participation": true}[m.Category] && strings.TrimSpace(m.Content) != "" {
-			fact = true
-		}
+		seen[m.ID] = true
 	}
-	if !index || !fact {
-		return false, "private profile index or sourced topic missing"
+	if len(ledger.MemoryIDs) != len(r.Receipt.MemoryIDs) {
+		return false, "output receipt memory count differs from ledger"
+	}
+	for i, id := range ledger.MemoryIDs {
+		if !seen[id] || r.Receipt.MemoryIDs[i] != id {
+			return false, "committed private knowledge missing or receipt ID mismatch"
+		}
 	}
 	return true, ""
 }

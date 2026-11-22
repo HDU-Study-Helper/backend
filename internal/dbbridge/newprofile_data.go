@@ -111,7 +111,7 @@ func queryProjection(set dataDataset, fields []string) ([]string, error) {
 	for _, name := range fields {
 		expr, ok := set.fields[name]
 		if !ok || seen[name] {
-			return nil, f.Fail("PERMISSION_DENIED", "query field is unavailable or duplicated: "+name+"; choose from catalog: "+strings.Join(set.names, ","))
+			return nil, f.Fail("INVALID_ARGUMENT", "query field is unavailable or duplicated: "+name+"; choose from catalog: "+strings.Join(set.names, ","))
 		}
 		seen[name] = true
 		cols = append(cols, expr+" AS "+pgx.Identifier{name}.Sanitize())
@@ -124,7 +124,7 @@ func queryFilters(set dataDataset, filters []f.Filter, args *[]any) ([]string, e
 	for _, filter := range filters {
 		expr, ok := set.fields[filter.Field]
 		if !ok {
-			return nil, f.Fail("PERMISSION_DENIED", "filter field is unavailable: "+filter.Field+"; choose from catalog: "+strings.Join(set.names, ","))
+			return nil, f.Fail("INVALID_ARGUMENT", "filter field is unavailable: "+filter.Field+"; choose from catalog: "+strings.Join(set.names, ","))
 		}
 		value, ok := filter.Value.(string)
 		if !ok || len(value) > 4096 {
@@ -186,6 +186,7 @@ func (r *agentData) queryDataset(ctx context.Context, s f.Scope, q f.Query) (f.Q
 		return result, err
 	}
 	args := []any{s.OwnerID}
+	set.where = append(set.where, firstDataBounds(ctx, s.OwnerID, q.Dataset, &args)...)
 	where, err := queryFilters(set, q.Filters, &args)
 	if err != nil {
 		return result, err
@@ -229,8 +230,10 @@ func (r *agentData) queryDataset(ctx context.Context, s f.Scope, q f.Query) (f.Q
 		}
 	}
 	// Return a smaller truthful page when full metadata/text exceeds model tool
-	// budgets. The next offset advances only over rows actually returned.
-	const pageBytes = 72 << 10
+	// budgets. Reserve headroom below the 64 KiB Agent tool result limit for
+	// rows, pagination and JSON envelopes. Never shorten individual fields.
+	// The next offset advances only over rows actually returned.
+	const pageBytes = 48 << 10
 	used, keep := 0, 0
 	for i, row := range result.Rows {
 		raw, e := json.Marshal(row)

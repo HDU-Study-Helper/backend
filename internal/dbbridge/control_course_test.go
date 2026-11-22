@@ -228,7 +228,7 @@ func TestPostgresControlCourseLargeUnitsAndLegacyLimits(t *testing.T) {
 	for _, source := range []string{"dws", "ucampus", "jwxt"} {
 		changes := make([]model.ControlChange, 101)
 		for i := range changes {
-			changes[i] = model.ControlChange{Resource: "message", After: json.RawMessage(`{"title":"small"}`)}
+			changes[i] = model.ControlChange{ConnectionID: "fixture-connection", GroupID: "fixture-group", Resource: "message", After: json.RawMessage(`{"title":"small"}`)}
 		}
 		controlCourseEvents(t, db, round, u.ID, source, changes)
 	}
@@ -239,14 +239,21 @@ func TestPostgresControlCourseLargeUnitsAndLegacyLimits(t *testing.T) {
 		t.Fatal("legacy chunk count", len(batches))
 	}
 	for _, b := range batches {
-		if b.Scope != nil || (b.Count != 100 && b.Count != 1) || b.Status != "pending" {
-			t.Fatal("legacy count behavior changed", b)
+		if (b.Count != 100 && b.Count != 1) || b.Status != "pending" {
+			t.Fatal("count behavior changed", b)
+		}
+		if b.Source == "dws" {
+			if b.Scope == nil || b.Scope.Kind != "group" || b.Scope.ConnectionID != "fixture-connection" || b.Scope.GroupID != "fixture-group" {
+				t.Fatal("DWS chunk lost group identity", b)
+			}
+		} else if b.Scope != nil {
+			t.Fatal("legacy source acquired a scope", b)
 		}
 	}
 	sizeRound, err := repo.StartRound(ctx, "test")
 	must(t, err)
 	for _, source := range []string{"dws", "ucampus", "jwxt"} {
-		controlCourseEvents(t, db, sizeRound, u.ID, source, []model.ControlChange{{After: academicJSON(map[string]any{"content": strings.Repeat("x", 30000)})}, {After: academicJSON(map[string]any{"content": strings.Repeat("x", 30000)})}, {After: academicJSON(map[string]any{"content": strings.Repeat("x", 45000)})}})
+		controlCourseEvents(t, db, sizeRound, u.ID, source, []model.ControlChange{{ConnectionID: "fixture-connection", GroupID: "fixture-group", After: academicJSON(map[string]any{"content": strings.Repeat("x", 30000)})}, {ConnectionID: "fixture-connection", GroupID: "fixture-group", After: academicJSON(map[string]any{"content": strings.Repeat("x", 30000)})}, {ConnectionID: "fixture-connection", GroupID: "fixture-group", After: academicJSON(map[string]any{"content": strings.Repeat("x", 45000)})}})
 	}
 	must(t, repo.FinishRound(ctx, sizeRound, nil, false))
 	must(t, repo.Seal(ctx))
@@ -256,8 +263,15 @@ func TestPostgresControlCourseLargeUnitsAndLegacyLimits(t *testing.T) {
 	}
 	blocked := 0
 	for _, b := range batches {
-		if b.Scope != nil || b.Count != 1 {
-			t.Fatal("legacy scope/count changed")
+		if b.Count != 1 {
+			t.Fatal("byte chunk count changed")
+		}
+		if b.Source == "dws" {
+			if b.Scope == nil || b.Scope.Kind != "group" || b.Scope.ConnectionID != "fixture-connection" || b.Scope.GroupID != "fixture-group" {
+				t.Fatal("DWS byte chunk lost group identity", b)
+			}
+		} else if b.Scope != nil {
+			t.Fatal("legacy source acquired a scope", b)
 		}
 		if b.Status == "blocked" {
 			blocked++

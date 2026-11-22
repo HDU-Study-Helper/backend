@@ -182,6 +182,18 @@ func waitLink(t *testing.T, s *Service, scope model.DWSScope, id string) LinkCha
 	}
 	return c
 }
+func TestLinkFailureDiagnosis(t *testing.T) {
+	p := &deviceParser{}
+	_ = p.line("检查组织 CLI 授权状态...")
+	if p.failureCode != "" {
+		t.Fatal("progress is not a denial")
+	}
+	_ = p.line("⚠️  您暂无 CLI 数据访问权限")
+	if safeCode(errors.New(p.failureCode)) != "dws_org_denied" {
+		t.Fatal("expected safe organization denial code")
+	}
+}
+
 func TestLinkAuthorizationAndIdentity(t *testing.T) {
 	for _, mode := range []string{"success", "wrong_identity", "lease_lost"} {
 		t.Run(mode, func(t *testing.T) {

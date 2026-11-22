@@ -498,8 +498,14 @@ Agent 新增 `academic_offerings`、`academic_items` 数据集，使用既有 da
 
 采集每页前重新加载策略，学习通在课程请求前跳过、清理该课分页；MOOC按所属路由期次跳过，包括引用源期次和待取正文队列。数据库提交事务再检查最新黑名单，防止保存策略时已经发出的请求写入原始记录、投影和变化事件。历史归档保留，解除后按后续正常扫描继续。共享课程发现列表及没有明确课程标识的账号级通知/考试仍读取；不凭同名或来源期次推断黑名单归属。
 
+## Learner暂存提交账本（v16）
+
+`learner_stage_commits`按`owner_user_id,session_id`唯一，保存完整提交payload的request_hash、提交receipt与created_at。定义、目标PRI记忆和内部关系在同一短事务应用，提交前比较选择时的Workflow/记忆/关系基线并重新检查具体工具权限。相同session及相同payload重放返回原receipt，差异payload冲突。未提交草稿只在Run内存中，不写此账本，也不能据其声称跨Run自动恢复或request_id去重。模型输出READY只表示请求提交，父调用接收宿主生成的APPLIED/NO_CHANGE及commit_receipt。
+
 ## 按课程生成Trigger批次（v15）
 
-`control_batches.batch_scope` 为可空JSONB，保存新批次的课程范围 `{kind,connection_id,offering_id?,course_ref?,course_name?}`。已有历史批次保持NULL及原始内容。学习通、MOOC在每轮刷新结束后按用户＋平台＋连接＋确认的所属课程引用聚合，不按资源、同名或SPOC内容源期次合并。无可靠归属的信息按连接单列。DWS、U校园及其他来源仍按旧平台批次处理。
+Trigger模型选择协议为`indices_v1`：每次请求的changes使用从1开始的index，模型返回`relevant_indices`。编号只在当前请求/页有效，后端映射回该页冻结数组的真实change_id后，仍以`relevant_change_ids`保存control_batches.trigger_output；control_events、原始changes及下游证据引用保持真实ID。Agent Run原始输出可见短编号，回查时需使用同次输入；不能拿编号当全局事件ID。旧持久结果不迁移。
+
+`control_batches.batch_scope` 为可空JSONB，课程范围为 `{kind,connection_id,offering_id?,course_ref?,course_name?}`，DWS群范围为 `{kind:"group",connection_id,group_id}`。已有已封批历史保留原scope和内容，不回填或重分组。学习通、MOOC在每轮刷新结束后按用户＋平台＋连接＋确认的所属课程引用聚合，不按资源、同名或SPOC内容源期次合并。无可靠课程归属的信息按连接单列。DWS在同轮同用户下按连接＋群聚合，单群超过100条／44000字节时仅在该群内拆块。变化payload新增可选group_id：消息取同步检查点的群，附件取归属消息的群；旧未封批消息可从快照conversationId读取，旧附件按用户＋连接＋中心消息ID读取归属。无法确认或群标识冲突的事件单独封为blocked/DWS_GROUP_UNRESOLVED，不跨群合并。以上复用现有JSONB，无新增数据库迁移。U校园及其他来源仍按旧平台批次处理。
 
 同课程的一轮全部变化只封成一批；不以100条或全局5000事件查询上限拆散。课程原始事件总量超过700KiB则保留全部证据并封成blocked/COURSE_INPUT_TOO_LARGE，不截断。Trigger课程输入可达768KiB、上下文至少1MiB。未归属和旧平台批次仍采用100条／44000字节边界。封批事务及advisory lock保证重复调用和并发调用不重复分配事件；课程归属使用冻结的after/before和当前结构化证据核对，冲突保守归入未关联。后台显示课程范围，Filter仍逐项处理Trigger选中的变化。

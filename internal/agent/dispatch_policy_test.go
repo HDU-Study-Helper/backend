@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	f "academic/agent/framework"
+	stage "academic/backend/internal/learnerstage"
 )
 
 type dispatchPolicyRepo struct {
@@ -31,6 +32,22 @@ func (r *dispatchPolicyRepo) GetWorkflow(_ context.Context, owner, id string) (f
 	return r.workflow, nil
 }
 
+func (r *dispatchPolicyRepo) SearchMemory(context.Context, f.Scope, f.MemorySearch) ([]f.Memory, error) {
+	return []f.Memory{}, nil
+}
+func (r *dispatchPolicyRepo) LearnerSnapshot(_ context.Context, s f.Scope, id string) (stage.Snapshot, error) {
+	if s.OwnerID != r.workflow.OwnerID || id != r.workflow.ID {
+		return stage.Snapshot{}, f.Fail("RESOURCE_NOT_FOUND", "not owned")
+	}
+	return stage.Snapshot{Workflow: r.workflow, Memories: []f.Memory{}, Relations: []f.MemoryRelation{}}, nil
+}
+func (*dispatchPolicyRepo) CommitLearnerStage(context.Context, stage.Commit) (stage.Receipt, error) {
+	panic("blocked mock must not commit")
+}
+func (*dispatchPolicyRepo) LearnerStageReceipt(context.Context, string, string) (stage.Receipt, error) {
+	return stage.Receipt{}, f.Fail("RESOURCE_NOT_FOUND", "none")
+}
+
 func TestFilterLearnerWorkflowPolicyThroughRealBridge(t *testing.T) {
 	for _, tc := range []struct {
 		name, callerType, task, context string
@@ -40,7 +57,7 @@ func TestFilterLearnerWorkflowPolicyThroughRealBridge(t *testing.T) {
 		{"management with workflow", "filter", "update workflow", `{"request_type":"UPDATE","target_workflow_id":"wf"}`, true, true},
 		{"management without workflow", "filter", "manage workflow", `{"target_workflow_id":"wf"}`, false, false},
 		{"worker feedback", "worker", "feedback", `{}`, true, false},
-		{"legacy other caller", "assistant", "legacy task", `{}`, true, false},
+		{"untrusted other caller", "assistant", "legacy task", `{}`, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			caller, learner := testAgent("caller", "owner"), testAgent("learner", "owner")
@@ -61,10 +78,18 @@ func TestFilterLearnerWorkflowPolicyThroughRealBridge(t *testing.T) {
 							t.Fatal(err)
 						}
 						if tc.reject {
-							if result.OK || result.Error == nil || result.Error.Code != "INVALID_ARGUMENT" {
+							expected := "INVALID_ARGUMENT"
+							if tc.callerType == "assistant" {
+								expected = "PERMISSION_DENIED"
+							}
+							if result.OK || result.Error == nil || result.Error.Code != expected {
 								t.Fatalf("want actionable policy rejection, got %+v", result)
 							}
-							for _, guidance := range []string{"Worker", "target_agent_id", "context.target_workflow_id"} {
+							guidances := []string{"Worker", "target_agent_id", "context.target_workflow_id"}
+							if tc.callerType == "assistant" {
+								guidances = []string{"Filter", "Worker"}
+							}
+							for _, guidance := range guidances {
 								if !strings.Contains(result.Error.Message, guidance) {
 									t.Fatalf("missing %q in %q", guidance, result.Error.Message)
 								}
@@ -72,7 +97,7 @@ func TestFilterLearnerWorkflowPolicyThroughRealBridge(t *testing.T) {
 						} else if !result.OK {
 							t.Fatalf("compatible dispatch rejected: %+v", result)
 						}
-						return done(), nil
+						return f.ModelResponse{Message: f.Message{Role: "assistant", Content: `{"status":"COMPLETED"}`}, FinishReason: "stop"}, nil
 					}
 					var childContext map[string]any
 					if err := json.Unmarshal([]byte(tc.context), &childContext); err != nil {
@@ -91,10 +116,17 @@ func TestFilterLearnerWorkflowPolicyThroughRealBridge(t *testing.T) {
 					if tc.reject {
 						t.Fatal("rejected dispatch reached Learner model")
 					}
-					if !tc.bound && !strings.Contains(request.Messages[len(request.Messages)-1].Content, "target_workflow_id") {
-						t.Fatal("management target context was lost")
+					if !tc.bound {
+						found := false
+						for _, m := range request.Messages {
+							found = found || strings.Contains(m.Content, "target_workflow_id")
+						}
+						if !found {
+							t.Fatal("management target context was lost")
+						}
 					}
-					return done(), nil
+					state := stagingState(t, request)
+					return f.ModelResponse{Message: f.Message{Role: "assistant", Content: string(mustStageJSON(map[string]any{"protocol": stage.Protocol, "session_id": state["session_id"], "path": state["path"], "request_id": nil, "item_id": nil, "parent_item_id": nil, "workflow_id": state["workflow_id"], "base_version": state["base_version"], "entity": nil, "status": "NEEDS_INFO", "operation": "NONE", "completion": nil, "summary": "blocked without writes", "reason": "awaiting evidence", "evidence_refs": []any{}, "changes": []any{}, "questions": []any{}, "limitations": []any{}}))}, FinishReason: "stop"}, nil
 				}),
 			}})
 			if err != nil {
